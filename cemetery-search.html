@@ -1,0 +1,1985 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#1a1f1a">
+<title>Cemetery Search — Photo Request Matcher</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  /* ==========================================================
+     Cemetery Search — Photo Request Matcher
+     Aesthetic: weathered field-journal meets archival index card.
+     Built for outdoor legibility: high contrast, large touch targets,
+     muted greens and stone-greys that don't glare in sunlight.
+     ========================================================== */
+
+  @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+  :root {
+    --bg: #efe9dc;             /* aged paper */
+    --bg-deep: #e3dac6;        /* darker paper */
+    --ink: #1a1f1a;            /* near-black ink */
+    --ink-soft: #3d4538;
+    --moss: #4a5d3a;           /* moss green accent */
+    --moss-dark: #2f3d27;
+    --stone: #7d7466;          /* weathered stone */
+    --stone-light: #a89e8a;
+    --rust: #8b3a1f;           /* iron-rust accent for alerts */
+    --gold: #a07a2c;           /* faded gold for highlights */
+    --line: #9a8e75;
+    --paper-shadow: rgba(54, 47, 30, 0.12);
+
+    --font-display: 'Cormorant Garamond', 'Times New Roman', serif;
+    --font-mono: 'JetBrains Mono', 'Courier New', monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: var(--font-display);
+    background-color: var(--bg);
+    background-image:
+      radial-gradient(at 20% 10%, rgba(74,93,58,0.08) 0%, transparent 50%),
+      radial-gradient(at 80% 90%, rgba(139,58,31,0.06) 0%, transparent 50%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200' viewBox='0 0 200 200'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='0.85' numOctaves='2' seed='3'/%3E%3CfeColorMatrix values='0 0 0 0 0.15 0 0 0 0 0.12 0 0 0 0 0.08 0 0 0 0.12 0'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+    color: var(--ink);
+    min-height: 100vh;
+    line-height: 1.5;
+    font-size: 17px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Header */
+  header {
+    padding: 32px 24px 24px;
+    border-bottom: 2px solid var(--ink);
+    background-color: var(--bg-deep);
+    position: relative;
+  }
+  header::after {
+    content: '';
+    position: absolute;
+    left: 0; right: 0; bottom: -6px;
+    height: 1px;
+    background-color: var(--ink);
+  }
+  .header-inner {
+    max-width: 1200px;
+    margin: 0 auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  h1 {
+    font-weight: 600;
+    font-size: clamp(1.8rem, 5vw, 2.8rem);
+    line-height: 1;
+    letter-spacing: -0.01em;
+    font-style: italic;
+  }
+  h1 .ornament {
+    font-style: normal;
+    color: var(--moss);
+    margin: 0 8px;
+  }
+  .subtitle {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--stone);
+    margin-top: 4px;
+  }
+  .stats {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--ink-soft);
+    text-align: right;
+    line-height: 1.6;
+  }
+  .stats strong { color: var(--moss-dark); font-size: 1.1rem; }
+
+  /* Tabs */
+  nav.tabs {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 24px;
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--line);
+    background-color: var(--bg-deep);
+  }
+  .tab {
+    background: none;
+    border: none;
+    padding: 14px 20px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    cursor: pointer;
+    color: var(--stone);
+    border-bottom: 3px solid transparent;
+    transition: all 0.2s;
+    position: relative;
+    top: 1px;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab.active {
+    color: var(--ink);
+    border-bottom-color: var(--moss);
+    background-color: var(--bg);
+  }
+
+  /* Main panels */
+  main { max-width: 1200px; margin: 0 auto; padding: 32px 24px 80px; }
+  .panel { display: none; }
+  .panel.active { display: block; animation: fadeIn 0.3s ease; }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: none; }
+  }
+
+  /* Instructions card */
+  .card {
+    background-color: rgba(255,253,247,0.65);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    padding: 24px;
+    margin-bottom: 24px;
+    box-shadow: 2px 2px 0 var(--paper-shadow);
+  }
+  .card h2 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--moss-dark);
+  }
+  .card p { margin-bottom: 10px; color: var(--ink-soft); }
+  .card ol, .card ul { margin: 12px 0 12px 24px; color: var(--ink-soft); }
+  .card li { margin-bottom: 6px; }
+  .card a {
+    color: var(--moss-dark);
+    text-decoration-color: var(--moss);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+  }
+  .card a:hover { color: var(--rust); }
+
+  .badge {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    padding: 2px 8px;
+    background-color: var(--moss);
+    color: var(--bg);
+    border-radius: 1px;
+  }
+  .badge.warning { background-color: var(--rust); }
+  .badge.gold { background-color: var(--gold); }
+
+  /* Two-column paste area */
+  .paste-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 24px;
+  }
+  @media (max-width: 800px) {
+    .paste-grid { grid-template-columns: 1fr; }
+  }
+  .paste-box {
+    background-color: rgba(255,253,247,0.65);
+    border: 1px solid var(--line);
+    padding: 20px;
+    box-shadow: 2px 2px 0 var(--paper-shadow);
+  }
+  .paste-box h3 {
+    font-size: 1.15rem;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .paste-box .source {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--stone);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 12px;
+    word-break: break-all;
+  }
+  textarea {
+    width: 100%;
+    min-height: 240px;
+    padding: 12px;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    background-color: var(--bg);
+    color: var(--ink);
+    border: 1px solid var(--stone-light);
+    border-radius: 1px;
+    resize: vertical;
+    line-height: 1.5;
+  }
+  textarea:focus {
+    outline: 2px solid var(--moss);
+    outline-offset: 1px;
+    border-color: transparent;
+  }
+  .count-line {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--stone);
+    margin-top: 8px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .count-line strong { color: var(--moss-dark); }
+
+  /* File drop zone */
+  .drop-zone {
+    margin-top: 12px;
+    border: 1.5px dashed var(--stone-light);
+    background-color: rgba(255,253,247,0.4);
+    padding: 14px 12px;
+    text-align: center;
+    border-radius: 1px;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--stone);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .drop-zone:hover {
+    border-color: var(--moss);
+    background-color: rgba(74,93,58,0.06);
+    color: var(--moss-dark);
+  }
+  .drop-zone.dragover {
+    border-color: var(--moss-dark);
+    background-color: rgba(74,93,58,0.12);
+    color: var(--moss-dark);
+    border-style: solid;
+  }
+  .drop-zone .or {
+    display: block;
+    font-size: 0.65rem;
+    margin-bottom: 6px;
+    color: var(--stone-light);
+  }
+  .drop-zone strong { color: var(--moss-dark); }
+  .drop-zone .filename {
+    display: block;
+    margin-top: 4px;
+    font-size: 0.7rem;
+    color: var(--moss-dark);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  /* Buttons */
+  button.primary, button.secondary {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    padding: 12px 24px;
+    border: 1.5px solid var(--ink);
+    cursor: pointer;
+    transition: all 0.15s;
+    border-radius: 1px;
+  }
+  button.primary {
+    background-color: var(--moss-dark);
+    color: var(--bg);
+    border-color: var(--moss-dark);
+  }
+  button.primary:hover {
+    background-color: var(--ink);
+    border-color: var(--ink);
+    transform: translate(-1px, -1px);
+    box-shadow: 2px 2px 0 var(--stone);
+  }
+  button.secondary {
+    background-color: transparent;
+    color: var(--ink);
+  }
+  button.secondary:hover {
+    background-color: var(--ink);
+    color: var(--bg);
+  }
+  .button-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+
+  /* Match controls bar */
+  .controls {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-bottom: 20px;
+    padding: 16px;
+    background-color: rgba(255,253,247,0.65);
+    border: 1px solid var(--line);
+    box-shadow: 2px 2px 0 var(--paper-shadow);
+  }
+  .controls label {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--stone);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .controls input[type="text"], .controls select {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    padding: 6px 10px;
+    background-color: var(--bg);
+    border: 1px solid var(--stone-light);
+    color: var(--ink);
+    border-radius: 1px;
+  }
+  .controls input[type="checkbox"] {
+    accent-color: var(--moss-dark);
+    width: 16px; height: 16px;
+  }
+
+  /* Section group */
+  .section-group {
+    margin-bottom: 32px;
+  }
+  .section-header {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    padding: 12px 16px;
+    background-color: var(--moss-dark);
+    color: var(--bg);
+    border: 1px solid var(--moss-dark);
+    margin-bottom: 0;
+  }
+  .section-header h2 {
+    font-family: var(--font-display);
+    font-size: 1.5rem;
+    font-weight: 600;
+    font-style: italic;
+  }
+  .section-header .meta {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: var(--bg-deep);
+    margin-left: auto;
+  }
+
+  /* Match cards */
+  .match-card {
+    background-color: rgba(255,253,247,0.75);
+    border: 1px solid var(--line);
+    border-top: none;
+    padding: 16px 20px;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 16px;
+    align-items: center;
+    transition: background-color 0.15s;
+  }
+  .match-card:hover { background-color: rgba(255,253,247,1); }
+  .match-card.done {
+    background-color: rgba(74,93,58,0.08);
+    opacity: 0.55;
+  }
+  .match-card.done .person-name { text-decoration: line-through; }
+  .match-card + .match-card { border-top: 1px dashed var(--stone-light); }
+
+  .check-col {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .check-col input[type="checkbox"] {
+    width: 26px;
+    height: 26px;
+    accent-color: var(--moss-dark);
+    cursor: pointer;
+  }
+
+  .info-col { min-width: 0; }
+  .person-name {
+    font-size: 1.35rem;
+    font-weight: 600;
+    line-height: 1.2;
+    margin-bottom: 4px;
+    color: var(--ink);
+  }
+  .person-meta {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 4px;
+  }
+  .person-meta span { white-space: nowrap; }
+  .person-meta .label {
+    color: var(--stone);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.65rem;
+    margin-right: 4px;
+  }
+  .match-quality {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    padding: 2px 8px;
+    border-radius: 1px;
+    margin-top: 6px;
+    display: inline-block;
+  }
+  .match-quality.exact { background-color: var(--moss); color: var(--bg); }
+  .match-quality.strong { background-color: var(--gold); color: var(--bg); }
+  .match-quality.partial { background-color: var(--stone); color: var(--bg); }
+  .match-quality.bsa-only { background-color: var(--stone-light); color: var(--ink); }
+  .match-quality.fag-only { background-color: var(--rust); color: var(--bg); }
+
+  .action-col {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: flex-end;
+  }
+
+  .fag-button {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    padding: 10px 14px;
+    background-color: var(--ink);
+    color: var(--bg);
+    border: none;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+    white-space: nowrap;
+    transition: all 0.15s;
+    border-radius: 1px;
+  }
+  .fag-button:hover {
+    background-color: var(--moss-dark);
+    transform: translate(-1px, -1px);
+    box-shadow: 2px 2px 0 var(--stone);
+  }
+  .fag-button.disabled {
+    background-color: var(--stone-light);
+    color: var(--ink-soft);
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+
+  /* Empty state */
+  .empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--stone);
+    font-style: italic;
+    font-size: 1.2rem;
+  }
+  .empty-state .ornament {
+    font-size: 2rem;
+    color: var(--stone-light);
+    margin-bottom: 12px;
+  }
+
+  /* Mobile adjustments */
+  @media (max-width: 600px) {
+    main { padding: 20px 14px 60px; }
+    header { padding: 20px 14px 16px; }
+    nav.tabs { padding: 0 14px; }
+    .tab { padding: 12px 12px; font-size: 0.68rem; }
+    .match-card {
+      grid-template-columns: auto 1fr;
+      grid-template-areas: "check info" "action action";
+      padding: 14px;
+    }
+    .check-col { grid-area: check; }
+    .info-col { grid-area: info; }
+    .action-col { grid-area: action; align-items: stretch; }
+    .fag-button { text-align: center; padding: 14px; font-size: 0.8rem; }
+    .person-name { font-size: 1.2rem; }
+    .controls { padding: 12px; }
+  }
+
+  /* Footer */
+  footer {
+    text-align: center;
+    padding: 24px;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--stone);
+    border-top: 1px solid var(--line);
+    margin-top: 40px;
+  }
+
+  /* Print-friendly */
+  @media print {
+    body { background: white; color: black; }
+    nav.tabs, .controls, .action-col, header, footer { display: none !important; }
+    .panel { display: block !important; }
+    .match-card { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div>
+      <h1>Cemetery Search <span class="ornament">&#x2767;</span> <span style="font-style:normal; font-size:0.7em;">Photo Request Matcher</span></h1>
+      <div class="subtitle">Find a Grave &times; BS&amp;A Cemetery Records &nbsp;&middot;&nbsp; Field Edition</div>
+    </div>
+    <div class="stats" id="header-stats">
+      <strong id="stat-matches">0</strong> matches &nbsp;&middot;&nbsp;
+      <strong id="stat-done">0</strong> completed
+    </div>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="setup">&#x270E; Setup &amp; Paste</button>
+  <button class="tab" data-tab="walk">&#x2693; Walking List</button>
+  <button class="tab" data-tab="all">&#x2317; All Records</button>
+  <button class="tab" data-tab="help">? Instructions</button>
+</nav>
+
+<main>
+
+  <!-- ========== SETUP PANEL ========== -->
+  <section class="panel active" id="panel-setup">
+    <div class="card">
+      <h2>Step 1 &mdash; Paste Your Data <span class="badge">DO THIS FIRST</span></h2>
+      <p>This app cannot scrape Find a Grave or BS&amp;A Online directly (both block automated requests). Instead, you'll paste lists from each site. The app handles the matching from there.</p>
+      <p style="margin-top:12px;"><strong>Quick how-to:</strong></p>
+      <ol>
+        <li>Get a list from Find a Grave &mdash; either download the <code>.xlsx</code> from their photo request page and drop it on the Find a Grave box below, or paste the entries directly.</li>
+        <li>Get cemetery records from the City Clerk (best) or paste from BS&amp;A search results into the BS&amp;A box below.</li>
+        <li>Click <em>Match &amp; Build Walking List</em>.</li>
+      </ol>
+      <p style="margin-top:12px; font-size:0.9rem; color:var(--stone);">You can use any combination &mdash; drop a file in one box and paste in the other. The parser handles both. No Excel required &mdash; <code>.xlsx</code>, <code>.xls</code>, and <code>.csv</code> all work directly in your browser.</p>
+      <p style="margin-top:12px; font-size:0.9rem; color:var(--stone);">The parser is forgiving &mdash; raw text works, tab-separated works, the messy text from the page works. See the <em>Instructions</em> tab for examples if you get stuck.</p>
+    </div>
+
+    <div class="paste-grid">
+      <div class="paste-box">
+        <h3>Find a Grave &mdash; Photo Requests</h3>
+        <div class="source">findagrave.com / photo-request</div>
+        <textarea id="fag-input" placeholder="Paste Find a Grave photo request list here.
+
+The parser looks for: a name, a birth year and a death year on the same line or in nearby lines, and (if visible) the memorial ID number — that's the long number in the URL like findagrave.com/memorial/16714155/...
+
+Tip: if you copy a whole page, junk navigation text gets ignored automatically."></textarea>
+        <div class="drop-zone" id="fag-drop">
+          <span class="or">&mdash; or &mdash;</span>
+          <strong>Drop a file here</strong> or click to browse
+          <span style="display:block; font-size:0.65rem; margin-top:4px; color:var(--stone-light);">Accepts .xlsx, .xls, .csv from Find a Grave's download</span>
+          <span class="filename" id="fag-filename"></span>
+          <input type="file" id="fag-file" accept=".xlsx,.xls,.csv" style="display:none;">
+        </div>
+        <div class="count-line">
+          <span>Detected: <strong id="fag-count">0</strong> requests</span>
+          <span id="fag-status"></span>
+        </div>
+      </div>
+
+      <div class="paste-box">
+        <h3>BS&amp;A Online &mdash; Cemetery Records</h3>
+        <div class="source">bsaonline.com / cemetery management</div>
+        <textarea id="bsa-input" placeholder="Paste BS&A Cemetery search results here.
+
+The parser looks for: a deceased name, birth/death dates, and section/lot location info (e.g. 'Section B', 'Block 4', 'Lot 12').
+
+Tip: in BS&A, do a broad search (e.g. leave name blank, or search 'A%') to pull a large list, then copy the results table."></textarea>
+        <div class="drop-zone" id="bsa-drop">
+          <span class="or">&mdash; or &mdash;</span>
+          <strong>Drop a file here</strong> or click to browse
+          <span style="display:block; font-size:0.65rem; margin-top:4px; color:var(--stone-light);">Accepts .xlsx, .xls, .csv (e.g. from the City Clerk)</span>
+          <span class="filename" id="bsa-filename"></span>
+          <input type="file" id="bsa-file" accept=".xlsx,.xls,.csv" style="display:none;">
+        </div>
+        <div class="count-line">
+          <span>Detected: <strong id="bsa-count">0</strong> records</span>
+          <span id="bsa-status"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="button-row">
+      <button class="primary" id="btn-match">&#x21AA; Match &amp; Build Walking List</button>
+      <button class="secondary" id="btn-load-sample">Load Sample Data</button>
+      <button class="secondary" id="btn-clear">Clear All Data</button>
+      <button class="secondary" id="btn-export">Export Progress (.json)</button>
+      <button class="secondary" id="btn-import">Import Progress</button>
+      <input type="file" id="import-file" accept=".json" style="display:none;">
+    </div>
+  </section>
+
+  <!-- ========== WALKING LIST PANEL ========== -->
+  <section class="panel" id="panel-walk">
+    <div class="controls">
+      <label>Filter: <input type="text" id="filter-text" placeholder="name, section..."></label>
+      <label>Sort: <select id="sort-mode">
+        <option value="section">By Section / Lot</option>
+        <option value="name">By Surname</option>
+        <option value="quality">By Match Quality</option>
+      </select></label>
+      <label><input type="checkbox" id="hide-done"> Hide completed</label>
+      <label><input type="checkbox" id="only-matched" checked> Only matched (has section info)</label>
+      <button class="secondary" id="btn-reset-progress" style="margin-left:auto;">Reset all checks</button>
+    </div>
+    <div id="walking-list"></div>
+  </section>
+
+  <!-- ========== ALL RECORDS PANEL ========== -->
+  <section class="panel" id="panel-all">
+    <div class="controls">
+      <label>Filter: <input type="text" id="filter-all" placeholder="Search all records..."></label>
+      <label>Show: <select id="show-mode">
+        <option value="all">Everything</option>
+        <option value="matched">Matched only</option>
+        <option value="fag-only">Find a Grave only (unmatched)</option>
+        <option value="bsa-only">BS&amp;A only (unmatched)</option>
+      </select></label>
+    </div>
+    <div id="all-records"></div>
+  </section>
+
+  <!-- ========== HELP PANEL ========== -->
+  <section class="panel" id="panel-help">
+    <div class="card">
+      <h2>How To Use This App</h2>
+      <p><strong>The big picture:</strong> Find a Grave has lists of headstones people want photographed at cemeteries across the country. Many local municipalities (like the City of St. Louis, MI for Oak Grove Cemetery) publish their actual burial records online via BS&amp;A Online, including section/lot location. This app cross-references the two so you can walk any cemetery efficiently.</p>
+      <p>It's not tied to any one cemetery &mdash; paste in data from whichever Find a Grave photo request page and whichever municipal cemetery records you're working with.</p>
+    </div>
+
+    <div class="card">
+      <h2>Why doesn't it scrape live?</h2>
+      <p>Both Find a Grave and BS&amp;A Online block automated requests from web browsers (Find a Grave returns a 403 error; BS&amp;A requires interactive form submission). A browser-based scraper would also be blocked by CORS security. The realistic and reliable approach is a one-time paste &mdash; takes about 10 minutes, then the app does all the matching.</p>
+    </div>
+
+    <div class="card">
+      <h2>Getting data from Find a Grave</h2>
+      <p><strong>Easiest method &mdash; download the spreadsheet:</strong></p>
+      <ol>
+        <li>Go to <a href="https://www.findagrave.com" target="_blank">findagrave.com</a> and navigate to the cemetery you're working with.</li>
+        <li>Click "View Photo Requests" (or use the URL pattern <code>/photo-request/search/cemetery/[ID]</code>).</li>
+        <li>Look for a <strong>Download</strong> button on the photo requests page. Find a Grave will give you an <code>.xlsx</code> file (up to 1,000 records at a time).</li>
+        <li>Drop that file directly onto the <strong>"Drop a file here"</strong> zone in the Find a Grave paste box. You don't need Excel &mdash; the app parses the file in your browser.</li>
+      </ol>
+      <p style="margin-top:12px;"><strong>Alternative &mdash; copy and paste:</strong></p>
+      <ol>
+        <li>For each page of results, select the list of entries (each one has a name, dates, and a memorial ID).</li>
+        <li>Paste the raw text into the Find a Grave box. Junk lines get filtered out.</li>
+        <li>The memorial ID is the long number in each entry's link (e.g., <code>16714155</code> in <code>/memorial/16714155/</code>). The app uses it to deep-link back so you can fulfill the request right at the headstone.</li>
+      </ol>
+      <p><strong>Example of a line the parser understands:</strong></p>
+      <pre style="background:var(--bg-deep); padding:12px; font-family:var(--font-mono); font-size:0.78rem; overflow-x:auto; margin-top:8px;">John A. Smith  1882-1945  Memorial #16714155</pre>
+    </div>
+
+    <div class="card">
+      <h2>Getting data from BS&amp;A Online</h2>
+      <p><strong>Best method &mdash; ask the City Clerk:</strong> the staff side of BS&amp;A has a built-in "export to spreadsheet" button. Most clerks will email you the entire cemetery roster as an <code>.xlsx</code> or <code>.csv</code> in a few minutes. Drop that file directly onto the BS&amp;A box and you're done.</p>
+      <p style="margin-top:12px;"><strong>Manual method &mdash; copy and paste:</strong></p>
+      <ol>
+        <li>Go to <a href="https://bsaonline.com" target="_blank">bsaonline.com</a> and find the municipality that manages the cemetery you're researching.</li>
+        <li>Open that municipality's Cemetery Management Search.</li>
+        <li>To pull a lot of records at once, leave the name field blank or search broadly (e.g. surname "A%").</li>
+        <li>Copy the results table (right-click &rarr; Select all, or drag-select the rows).</li>
+        <li>Paste into the BS&amp;A box. The parser pulls names, dates, and section/block/lot info.</li>
+      </ol>
+      <p style="margin-top:12px; font-size:0.9rem;">The downside of the manual method is that BS&amp;A's public search hides plot location until you click each record individually. So the spreadsheet export from the clerk is by far the better option if you can get it.</p>
+      <p><strong>Example of a line the parser understands:</strong></p>
+      <pre style="background:var(--bg-deep); padding:12px; font-family:var(--font-mono); font-size:0.78rem; overflow-x:auto; margin-top:8px;">Smith, John A.   b. 1882   d. 1945   Section B  Lot 14  Grave 3</pre>
+      <p style="margin-top:12px; font-size:0.9rem; color:var(--stone);">Note: not every cemetery is in BS&amp;A. If yours isn't, any text-based grave record list (from a township website, a transcription project, etc.) works &mdash; the parser just needs names, years, and location fields.</p>
+    </div>
+
+    <div class="card">
+      <h2>Matching logic</h2>
+      <ul>
+        <li><span class="badge">EXACT</span> &mdash; surname, first name, and at least one matching year (birth or death).</li>
+        <li><span class="badge gold">STRONG</span> &mdash; surname + first initial + a matching year.</li>
+        <li><span class="badge warning">PARTIAL</span> &mdash; surname matches and dates are close, but ambiguous (manual confirmation suggested).</li>
+        <li>Records that don't match are still shown in the <em>All Records</em> tab so you can spot misses.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>At the cemetery</h2>
+      <ul>
+        <li>Open the <em>Walking List</em> tab. It groups graves by section, so you can clear one section at a time without backtracking.</li>
+        <li>Each match shows name, dates, and section/lot.</li>
+        <li>Tap the dark "Open Find a Grave" button on a match &mdash; it opens that exact photo request in a new tab so you can upload your photo on the spot.</li>
+        <li>Check off completed photos. Progress saves automatically in your browser.</li>
+        <li>The app works offline once loaded &mdash; save the page to your phone, or just keep this tab open before you lose signal.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>Saving the app for offline use</h2>
+      <p>This is a single HTML file. To use it offline:</p>
+      <ol>
+        <li>On a desktop: just download the file and double-click it. It opens in any browser, no install needed.</li>
+        <li>On a phone: open the file in your browser at home, paste your data, then leave the tab open. Your data and progress save to local storage and survive a closed tab as long as you don't clear your browser data.</li>
+        <li>You can also use <em>Export Progress</em> to save a backup .json file, and <em>Import Progress</em> to restore it.</li>
+      </ol>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  Built for documenting cemetery photo requests &nbsp;&middot;&nbsp; Data stays in your browser
+</footer>
+
+<script>
+/* ==========================================================
+   STATE
+   ========================================================== */
+const STORAGE_KEY = 'oakgrove_cemetery_app_v2';
+
+let state = {
+  fagInput: '',
+  bsaInput: '',
+  fagRecords: [],
+  bsaRecords: [],
+  matches: [],
+  doneIds: {},      // map of match id -> true
+  // When files are uploaded, the parsed records go here directly.
+  // doMatch() prefers these over re-parsing the textarea text, since
+  // they're cleaner and pre-structured.
+  fagFileRecords: null,
+  bsaFileRecords: null,
+};
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      state = Object.assign(state, parsed);
+    }
+  } catch(e) { /* ignore */ }
+}
+function saveState() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+  catch(e) { /* ignore */ }
+}
+
+/* ==========================================================
+   PARSING
+   The parsers are deliberately forgiving — they tolerate
+   messy multi-line pastes with navigation junk mixed in.
+   ========================================================== */
+
+// Pulls a 4-digit year between 1700-2099
+const yearRegex = /\b(1[7-9]\d{2}|20\d{2})\b/g;
+
+// Generic name pattern: capitalized words, allows middle initials, suffixes
+const namePattern = /\b([A-Z][a-z]+(?:[\s\-'][A-Z][a-z]*\.?)*)(?:\s+(?:[A-Z]\.?\s+)?)?([A-Z][a-z]+(?:[\s\-'][A-Z][a-z]+)*)\b/;
+
+function parseFindAGrave(text) {
+  if (!text || !text.trim()) return [];
+  const records = [];
+  // Split into chunks separated by blank lines or memorial keywords
+  const lines = text.split(/\r?\n/).map(l => l.trim());
+
+  let buffer = [];
+  const flush = () => {
+    if (buffer.length === 0) return;
+    const chunk = buffer.join(' ');
+    const rec = parseFagChunk(chunk);
+    if (rec) records.push(rec);
+    buffer = [];
+  };
+
+  for (const line of lines) {
+    // Lines that often appear between entries
+    if (!line || /^(photo request|memorial|view memorial|added|share|sponsor|find a grave|cemetery|page \d+|sort by|results)/i.test(line)) {
+      // a blank or separator line: try to flush
+      if (!line) flush();
+      else buffer.push(line);
+    } else {
+      buffer.push(line);
+    }
+  }
+  flush();
+
+  // Dedupe by memorial ID (or by name+years if no id)
+  const seen = new Set();
+  return records.filter(r => {
+    const key = r.memorialId || `${r.lastName}|${r.firstName}|${r.birthYear}|${r.deathYear}`;
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+}
+
+function parseFagChunk(chunk) {
+  if (!chunk || chunk.length < 6) return null;
+  // Skip obvious nav text
+  if (/^(sign in|sign up|menu|search|sponsor|advertisement|cookie|subscribe)/i.test(chunk)) return null;
+
+  // Look for memorial ID (long digit string, often 5+ digits, near "memorial" or in a URL)
+  let memorialId = null;
+  const idMatch = chunk.match(/\bmemorial[\/\s#-]*(\d{4,})\b/i) ||
+                  chunk.match(/findagrave\.com[\/\w-]*?\/(\d{5,})\b/i) ||
+                  chunk.match(/\b(\d{6,})\b/); // fallback: any longish digit string
+  if (idMatch) memorialId = idMatch[1];
+
+  // Extract years
+  const years = [...chunk.matchAll(yearRegex)].map(m => parseInt(m[1]));
+  let birthYear = null, deathYear = null;
+  if (years.length >= 2) {
+    // Two years: assume birth then death
+    const sorted = [...years].sort((a,b) => a-b);
+    birthYear = sorted[0];
+    deathYear = sorted[sorted.length-1];
+  } else if (years.length === 1) {
+    deathYear = years[0]; // ambiguous — could be either
+  }
+
+  // Strip years and ids from chunk to find name
+  let nameText = chunk
+    .replace(/\b\d{4,}\b/g, ' ')
+    .replace(/memorial/ig, ' ')
+    .replace(/photo request/ig, ' ')
+    .replace(/added by/ig, ' ')
+    .replace(/[#•|<>]/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+
+  // Try a "Last, First" pattern first
+  let firstName = '', lastName = '';
+  const lastFirst = nameText.match(/^([A-Z][a-zA-Z\-']+),\s+([A-Z][a-zA-Z\-'.\s]+?)(?:\s|$)/);
+  if (lastFirst) {
+    lastName = lastFirst[1].trim();
+    firstName = lastFirst[2].trim();
+  } else {
+    // "First [Middle] Last" — take first capitalized word as first name, last capitalized word as last name
+    const words = nameText.split(/\s+/).filter(w => /^[A-Z][a-zA-Z\-'.]+$/.test(w) && w.length > 1);
+    if (words.length >= 2) {
+      firstName = words[0];
+      lastName = words[words.length - 1];
+    } else if (words.length === 1) {
+      lastName = words[0];
+    }
+  }
+
+  if (!lastName) return null;
+
+  return {
+    source: 'fag',
+    raw: chunk.substring(0, 200),
+    firstName,
+    lastName,
+    birthYear,
+    deathYear,
+    memorialId
+  };
+}
+
+function parseBsa(text) {
+  if (!text || !text.trim()) return [];
+  const records = [];
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    // Skip obvious headers
+    if (/^(name|deceased|section|lot|block|date of|burial|results|home|search)$/i.test(line)) continue;
+    if (line.length < 8) continue;
+
+    const rec = parseBsaLine(line);
+    if (rec) records.push(rec);
+  }
+
+  return records;
+}
+
+function parseBsaLine(line) {
+  // Look for section/lot/block info
+  let section = '', lot = '', block = '', grave = '';
+
+  const sectMatch = line.match(/\bsection[:\s]+([A-Z0-9]+(?:[-\s][A-Z0-9]+)?)\b/i) ||
+                    line.match(/\bsec[.\s]+([A-Z0-9]+)\b/i);
+  if (sectMatch) section = sectMatch[1].trim();
+
+  const blockMatch = line.match(/\bblock[:\s]+([A-Z0-9]+)\b/i) ||
+                     line.match(/\bblk[.\s]+([A-Z0-9]+)\b/i);
+  if (blockMatch) block = blockMatch[1].trim();
+
+  const lotMatch = line.match(/\blot[:\s]+([A-Z0-9-]+)\b/i);
+  if (lotMatch) lot = lotMatch[1].trim();
+
+  const graveMatch = line.match(/\bgrave[:\s]+([A-Z0-9-]+)\b/i) ||
+                     line.match(/\bspace[:\s]+([A-Z0-9-]+)\b/i);
+  if (graveMatch) grave = graveMatch[1].trim();
+
+  // Extract years
+  const years = [...line.matchAll(yearRegex)].map(m => parseInt(m[1]));
+  let birthYear = null, deathYear = null;
+  if (years.length >= 2) {
+    const sorted = [...years].sort((a,b) => a-b);
+    birthYear = sorted[0];
+    deathYear = sorted[sorted.length-1];
+  } else if (years.length === 1) {
+    deathYear = years[0];
+  }
+
+  // Strip out the structured data to isolate name
+  let nameText = line
+    .replace(/\bsection[:\s]+[A-Z0-9\-\s]+/ig, ' ')
+    .replace(/\bsec[.\s]+[A-Z0-9]+/ig, ' ')
+    .replace(/\bblock[:\s]+[A-Z0-9]+/ig, ' ')
+    .replace(/\bblk[.\s]+[A-Z0-9]+/ig, ' ')
+    .replace(/\blot[:\s]+[A-Z0-9\-]+/ig, ' ')
+    .replace(/\bgrave[:\s]+[A-Z0-9\-]+/ig, ' ')
+    .replace(/\bspace[:\s]+[A-Z0-9\-]+/ig, ' ')
+    .replace(/\bb\.?\s*\d{4}/ig, ' ')
+    .replace(/\bd\.?\s*\d{4}/ig, ' ')
+    .replace(/\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/g, ' ')
+    .replace(/\b\d{4}\b/g, ' ')
+    .replace(/[|\t]+/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+
+  let firstName = '', lastName = '';
+  const lastFirst = nameText.match(/^([A-Z][a-zA-Z\-']+),\s+([A-Z][a-zA-Z\-'.\s]+?)(?:\s|$)/);
+  if (lastFirst) {
+    lastName = lastFirst[1].trim();
+    firstName = lastFirst[2].trim();
+  } else {
+    const words = nameText.split(/\s+/).filter(w => /^[A-Z][a-zA-Z\-'.]+$/.test(w) && w.length > 1);
+    if (words.length >= 2) {
+      firstName = words[0];
+      lastName = words[words.length - 1];
+    } else if (words.length === 1) {
+      lastName = words[0];
+    }
+  }
+
+  if (!lastName) return null;
+
+  return {
+    source: 'bsa',
+    raw: line.substring(0, 200),
+    firstName,
+    lastName,
+    birthYear,
+    deathYear,
+    section, block, lot, grave
+  };
+}
+
+/* ==========================================================
+   MATCHING
+   ========================================================== */
+function normalize(s) {
+  return (s || '').toLowerCase().replace(/[^a-z]/g, '');
+}
+
+function matchRecords(fagList, bsaList) {
+  const matches = [];
+  const bsaUsed = new Set();
+
+  // Index BSA records by normalized last name
+  const bsaByLast = {};
+  bsaList.forEach((b, idx) => {
+    const key = normalize(b.lastName);
+    if (!bsaByLast[key]) bsaByLast[key] = [];
+    bsaByLast[key].push({ rec: b, idx });
+  });
+
+  fagList.forEach((f, fIdx) => {
+    const lastKey = normalize(f.lastName);
+    const candidates = bsaByLast[lastKey] || [];
+
+    // Score every candidate, then pick the best.
+    // Scoring philosophy:
+    //   - Surname match is the entry ticket (30 pts), but not enough alone
+    //     since common surnames may have 10+ matches.
+    //   - First name match is what disambiguates: exact match = +50, initial = +15.
+    //   - When years are available on BOTH sides, year match boosts score significantly.
+    //   - When years are only available on ONE side (common when BS&A has only
+    //     burial dates), we don't penalize — surname + strong first name is enough.
+    let best = null;
+    let bestScore = 0;
+
+    for (const cand of candidates) {
+      const b = cand.rec;
+      let score = 0;
+      const reasons = [];
+
+      // Surname match: entry ticket
+      score += 30;
+
+      // First name
+      const fFirst = normalize(f.firstName);
+      const bFirst = normalize(b.firstName);
+      let firstNameStrong = false;
+      if (fFirst && bFirst) {
+        if (fFirst === bFirst) {
+          score += 50; reasons.push('first-exact'); firstNameStrong = true;
+        } else if (bFirst.startsWith(fFirst) || fFirst.startsWith(bFirst)) {
+          // Handles "John" vs "Johnathan", "Mary" vs "Mary E"
+          score += 35; reasons.push('first-prefix'); firstNameStrong = true;
+        } else if (fFirst[0] === bFirst[0]) {
+          // First initial match — weak signal alone but not useless
+          score += 12; reasons.push('first-initial');
+        }
+      }
+
+      // Years — only score when BOTH sides have a year to compare.
+      // If one side has no years (common with BS&A burial reports), we don't penalize.
+      const bothHaveBirth = f.birthYear && b.birthYear;
+      const bothHaveDeath = f.deathYear && b.deathYear;
+      if (bothHaveBirth) {
+        if (f.birthYear === b.birthYear) { score += 25; reasons.push('birth-exact'); }
+        else if (Math.abs(f.birthYear - b.birthYear) <= 1) { score += 10; reasons.push('birth-close'); }
+        else { score -= 15; reasons.push('birth-mismatch'); }
+      }
+      if (bothHaveDeath) {
+        if (f.deathYear === b.deathYear) { score += 25; reasons.push('death-exact'); }
+        else if (Math.abs(f.deathYear - b.deathYear) <= 1) { score += 10; reasons.push('death-close'); }
+        else { score -= 15; reasons.push('death-mismatch'); }
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = { bsaIdx: cand.idx, rec: b, score, reasons, firstNameStrong };
+      }
+    }
+
+    // Quality thresholds:
+    //   - Exact (90+): surname + first-exact + year confirmation
+    //   - Strong (65+): surname + strong first name (no year contradiction)
+    //   - Partial (50+): surname + first initial, OR surname + weak first name match
+    //   - Below 50: not a confident match
+    let quality = 'none';
+    if (best) {
+      if (best.score >= 90) quality = 'exact';
+      else if (best.score >= 65) quality = 'strong';
+      else if (best.score >= 45) quality = 'partial';
+      else best = null;
+    }
+
+    matches.push({
+      id: 'm' + fIdx,
+      fag: f,
+      bsa: best ? best.rec : null,
+      quality: best ? quality : 'fag-only',
+      score: best ? best.score : 0,
+      reasons: best ? best.reasons : []
+    });
+
+    if (best) bsaUsed.add(best.bsaIdx);
+  });
+
+  // BSA-only records (in cemetery records but not in any photo request) — keep as reference
+  bsaList.forEach((b, idx) => {
+    if (!bsaUsed.has(idx)) {
+      matches.push({
+        id: 'b' + idx,
+        fag: null,
+        bsa: b,
+        quality: 'bsa-only',
+        score: 0,
+        reasons: []
+      });
+    }
+  });
+
+  return matches;
+}
+
+/* ==========================================================
+   RENDERING
+   ========================================================== */
+
+function formatDates(rec) {
+  if (!rec) return '';
+  const b = rec.birthYear || '?';
+  const d = rec.deathYear || '?';
+  if (b === '?' && d === '?') return '';
+  return `${b} – ${d}`;
+}
+
+function fagUrl(memorialId) {
+  if (!memorialId) return null;
+  return `https://www.findagrave.com/memorial/${memorialId}`;
+}
+
+// Pull plot info from whichever source has it (Find a Grave's "plot" column or BS&A's "Residing Plot")
+function plotInfo(match) {
+  // Prefer FAG-derived plot if present (closer to what user sees in app),
+  // fall back to BS&A.
+  const sources = [match.fag, match.bsa].filter(Boolean);
+  for (const src of sources) {
+    if (src.section || src.block || src.lot || src.grave || src.row) {
+      return {
+        section: src.section || '',
+        block: src.block || '',
+        row: src.row || '',
+        lot: src.lot || '',
+        grave: src.grave || '',
+      };
+    }
+  }
+  return { section: '', block: '', row: '', lot: '', grave: '' };
+}
+
+function locationString(match) {
+  const p = plotInfo(match);
+  const parts = [];
+  if (p.section) parts.push(`Section ${p.section}`);
+  if (p.block) parts.push(`Block ${p.block}`);
+  if (p.row) parts.push(`Row ${p.row}`);
+  if (p.lot) parts.push(`Lot ${p.lot}`);
+  if (p.grave) parts.push(`Grave ${p.grave}`);
+  return parts.join(' · ');
+}
+
+function sectionName(match) {
+  const p = plotInfo(match);
+  return p.section || '';
+}
+
+function sectionKey(match) {
+  const s = sectionName(match);
+  if (!s) return 'ZZZ-Unknown';
+  return s.toUpperCase().padStart(4, '0');
+}
+
+function hasLocation(match) {
+  const p = plotInfo(match);
+  return !!(p.section || p.block || p.lot || p.grave);
+}
+
+function renderWalkingList() {
+  const filter = (document.getElementById('filter-text').value || '').toLowerCase();
+  const sortMode = document.getElementById('sort-mode').value;
+  const hideDone = document.getElementById('hide-done').checked;
+  const onlyMatched = document.getElementById('only-matched').checked;
+
+  let items = state.matches.slice();
+  // Walking list cares about photo requests (FAG entries). A request is useful here if
+  // we have any location info — either from FAG's own plot column OR from the matched BS&A record.
+  // Pure BS&A-only records (no photo request) are not useful for walking, so always exclude.
+  items = items.filter(m => m.fag);
+  if (onlyMatched) {
+    items = items.filter(m => hasLocation(m));
+  }
+  if (filter) {
+    items = items.filter(m => {
+      const p = plotInfo(m);
+      const blob = [
+        m.fag?.firstName, m.fag?.lastName,
+        m.bsa?.firstName, m.bsa?.lastName,
+        p.section, p.block, p.lot
+      ].filter(Boolean).join(' ').toLowerCase();
+      return blob.includes(filter);
+    });
+  }
+  if (hideDone) {
+    items = items.filter(m => !state.doneIds[m.id]);
+  }
+
+  // Sort
+  if (sortMode === 'name') {
+    items.sort((a,b) => {
+      const an = (a.fag?.lastName || a.bsa?.lastName || '').toLowerCase();
+      const bn = (b.fag?.lastName || b.bsa?.lastName || '').toLowerCase();
+      return an.localeCompare(bn);
+    });
+  } else if (sortMode === 'quality') {
+    const order = { exact: 0, strong: 1, partial: 2, 'fag-only': 3, 'bsa-only': 4 };
+    items.sort((a,b) => order[a.quality] - order[b.quality]);
+  } else {
+    // by section, then by lot/grave
+    items.sort((a,b) => {
+      const as = sectionKey(a);
+      const bs = sectionKey(b);
+      if (as !== bs) return as.localeCompare(bs);
+      const ap = plotInfo(a);
+      const bp = plotInfo(b);
+      const al = (ap.lot || '').padStart(6, '0');
+      const bl = (bp.lot || '').padStart(6, '0');
+      if (al !== bl) return al.localeCompare(bl);
+      const ag = (ap.grave || '').padStart(6, '0');
+      const bg = (bp.grave || '').padStart(6, '0');
+      return ag.localeCompare(bg);
+    });
+  }
+
+  const container = document.getElementById('walking-list');
+  container.innerHTML = '';
+
+  if (items.length === 0) {
+    container.innerHTML = `<div class="empty-state">
+      <div class="ornament">&#x2767;</div>
+      Nothing to walk yet.<br>
+      <span style="font-size:0.9rem;">Paste your data in the Setup tab and click "Match &amp; Build Walking List".</span>
+    </div>`;
+    return;
+  }
+
+  if (sortMode === 'section') {
+    // Group by section
+    const groups = {};
+    items.forEach(item => {
+      const key = sectionName(item) || '(Unknown section)';
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(item);
+    });
+
+    const keys = Object.keys(groups).sort((a,b) => {
+      if (a === '(Unknown section)') return 1;
+      if (b === '(Unknown section)') return -1;
+      return a.localeCompare(b, undefined, { numeric: true });
+    });
+
+    keys.forEach(key => {
+      const groupItems = groups[key];
+      const doneCount = groupItems.filter(g => state.doneIds[g.id]).length;
+      const section = document.createElement('div');
+      section.className = 'section-group';
+      section.innerHTML = `
+        <div class="section-header">
+          <h2>${key === '(Unknown section)' ? 'Unknown Section' : 'Section ' + escapeHtml(key)}</h2>
+          <span class="meta">${doneCount} / ${groupItems.length} done</span>
+        </div>
+      `;
+      groupItems.forEach(item => section.appendChild(renderMatchCard(item)));
+      container.appendChild(section);
+    });
+  } else {
+    items.forEach(item => container.appendChild(renderMatchCard(item)));
+  }
+
+  updateStats();
+}
+
+function renderMatchCard(match) {
+  const card = document.createElement('div');
+  card.className = 'match-card';
+  if (state.doneIds[match.id]) card.classList.add('done');
+
+  const displayName = (match.fag && (match.fag.firstName + ' ' + match.fag.lastName).trim()) ||
+                      (match.bsa && (match.bsa.firstName + ' ' + match.bsa.lastName).trim()) ||
+                      'Unknown';
+
+  const dates = formatDates(match.fag) || formatDates(match.bsa);
+  const loc = locationString(match);
+  const url = match.fag ? fagUrl(match.fag.memorialId) : null;
+
+  const qualityLabel = {
+    'exact': 'EXACT MATCH',
+    'strong': 'STRONG MATCH',
+    'partial': 'PARTIAL — VERIFY',
+    'bsa-only': 'NO PHOTO REQUEST',
+    'fag-only': 'NO BS&A RECORD'
+  }[match.quality] || '';
+
+  card.innerHTML = `
+    <div class="check-col">
+      <input type="checkbox" data-id="${match.id}" ${state.doneIds[match.id] ? 'checked' : ''} aria-label="Mark complete">
+    </div>
+    <div class="info-col">
+      <div class="person-name">${escapeHtml(displayName)}</div>
+      <div class="person-meta">
+        ${dates ? `<span><span class="label">Dates</span>${escapeHtml(dates)}</span>` : ''}
+        ${loc ? `<span><span class="label">Location</span>${escapeHtml(loc)}</span>` : ''}
+        ${match.fag?.memorialId ? `<span><span class="label">Memorial #</span>${escapeHtml(match.fag.memorialId)}</span>` : ''}
+      </div>
+      <div class="match-quality ${match.quality}">${qualityLabel}</div>
+    </div>
+    <div class="action-col">
+      ${url
+        ? `<a class="fag-button" href="${url}" target="_blank" rel="noopener">Open Find a Grave &rarr;</a>`
+        : match.quality === 'bsa-only'
+          ? `<span class="fag-button disabled">No request to fulfill</span>`
+          : `<span class="fag-button disabled">No memorial ID</span>`}
+    </div>
+  `;
+
+  const cb = card.querySelector('input[type=checkbox]');
+  cb.addEventListener('change', () => {
+    if (cb.checked) state.doneIds[match.id] = true;
+    else delete state.doneIds[match.id];
+    saveState();
+    card.classList.toggle('done', cb.checked);
+    updateStats();
+  });
+
+  return card;
+}
+
+function renderAllRecords() {
+  const filter = (document.getElementById('filter-all').value || '').toLowerCase();
+  const showMode = document.getElementById('show-mode').value;
+
+  let items = state.matches.slice();
+  if (showMode === 'matched') items = items.filter(m => m.fag && m.bsa);
+  else if (showMode === 'fag-only') items = items.filter(m => m.fag && !m.bsa);
+  else if (showMode === 'bsa-only') items = items.filter(m => !m.fag && m.bsa);
+
+  if (filter) {
+    items = items.filter(m => {
+      const blob = [
+        m.fag?.firstName, m.fag?.lastName, m.fag?.memorialId,
+        m.bsa?.firstName, m.bsa?.lastName,
+        m.bsa?.section, m.bsa?.block, m.bsa?.lot
+      ].filter(Boolean).join(' ').toLowerCase();
+      return blob.includes(filter);
+    });
+  }
+
+  const container = document.getElementById('all-records');
+  container.innerHTML = '';
+
+  if (items.length === 0) {
+    container.innerHTML = `<div class="empty-state">
+      <div class="ornament">&#x2767;</div>
+      No records to display.
+    </div>`;
+    return;
+  }
+
+  items.forEach(item => container.appendChild(renderMatchCard(item)));
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function updateStats() {
+  const matchCount = state.matches.filter(m => m.fag && m.bsa).length;
+  const doneCount = Object.keys(state.doneIds).filter(id => state.doneIds[id]).length;
+  document.getElementById('stat-matches').textContent = matchCount;
+  document.getElementById('stat-done').textContent = doneCount;
+}
+
+function updateInputCounts() {
+  const fagText = document.getElementById('fag-input').value;
+  const bsaText = document.getElementById('bsa-input').value;
+  state.fagInput = fagText;
+  state.bsaInput = bsaText;
+
+  // If user typed/pasted text after a file was loaded, clear the file-derived records
+  // so we don't have stale structured data. (Heuristic: text changed substantially.)
+  // For simplicity we only invalidate if the textarea is now empty.
+  if (!fagText.trim()) state.fagFileRecords = null;
+  if (!bsaText.trim()) state.bsaFileRecords = null;
+
+  // Show counts based on file records if available, otherwise parsed text
+  const fagCount = state.fagFileRecords ? state.fagFileRecords.length : parseFindAGrave(fagText).length;
+  const bsaCount = state.bsaFileRecords ? state.bsaFileRecords.length : parseBsa(bsaText).length;
+  document.getElementById('fag-count').textContent = fagCount;
+  document.getElementById('bsa-count').textContent = bsaCount;
+  document.getElementById('fag-status').textContent = state.fagFileRecords ? '(from file)' : (fagText.trim() ? 'parsing…' : '');
+  document.getElementById('bsa-status').textContent = state.bsaFileRecords ? '(from file)' : (bsaText.trim() ? 'parsing…' : '');
+}
+
+/* ==========================================================
+   ACTIONS
+   ========================================================== */
+function doMatch() {
+  state.fagInput = document.getElementById('fag-input').value;
+  state.bsaInput = document.getElementById('bsa-input').value;
+
+  // Prefer pre-parsed structured records from file uploads (cleaner & more reliable).
+  // Fall back to text parsers for manually-pasted data.
+  state.fagRecords = state.fagFileRecords
+    ? state.fagFileRecords.slice()
+    : parseFindAGrave(state.fagInput);
+  state.bsaRecords = state.bsaFileRecords
+    ? state.bsaFileRecords.slice()
+    : parseBsa(state.bsaInput);
+
+  state.matches = matchRecords(state.fagRecords, state.bsaRecords);
+  saveState();
+
+  // Switch to walking list
+  switchTab('walk');
+  renderWalkingList();
+
+  const matched = state.matches.filter(m => m.fag && m.bsa).length;
+  const withPlot = state.matches.filter(m => m.fag && m.bsa && (m.bsa.section || m.bsa.lot)).length;
+  const fagWithOwnPlot = state.matches.filter(m => m.fag && (m.fag.section || m.fag.lot) && !m.bsa).length;
+  alert(`Parsed:\n• ${state.fagRecords.length} Find a Grave photo requests\n• ${state.bsaRecords.length} cemetery records\n\nMatched: ${matched}\nPhoto requests with location info: ${matched + fagWithOwnPlot} / ${state.fagRecords.length}`);
+}
+
+function loadSample() {
+  const sampleFag = `Photo Request
+John A. Smith
+1882 - 1945
+Memorial #16714155
+
+Photo Request
+Mary Elizabeth Johnson
+1901 - 1978
+Memorial #16714200
+
+Photo Request
+Robert "Bob" Williams
+b. 1923 d. 1991
+Memorial #16714301
+
+Photo Request
+Ethel M. Brown
+1888 - 1967
+Memorial #16714410
+
+Photo Request
+Charles H. Davis
+1910 - 1985
+Memorial #16714502`;
+
+  const sampleBsa = `Smith, John A.   b. 1882   d. 1945   Section B  Lot 14  Grave 3
+Johnson, Mary E.   b. 1901   d. 1978   Section B  Lot 22  Grave 1
+Williams, Robert   b. 1923   d. 1991   Section C  Lot 5  Grave 4
+Brown, Ethel May   b. 1888   d. 1967   Section A  Lot 33  Grave 2
+Davis, Charles H.   b. 1910   d. 1985   Section C  Lot 11  Grave 1
+Miller, Sarah J.   b. 1875   d. 1952   Section A  Lot 7  Grave 2
+Anderson, Frank   b. 1899   d. 1971   Section D  Lot 18  Grave 3`;
+
+  document.getElementById('fag-input').value = sampleFag;
+  document.getElementById('bsa-input').value = sampleBsa;
+  updateInputCounts();
+}
+
+function clearAll() {
+  if (!confirm('Clear all pasted data, matches, and progress?')) return;
+  state = { fagInput: '', bsaInput: '', fagRecords: [], bsaRecords: [], matches: [], doneIds: {}, fagFileRecords: null, bsaFileRecords: null };
+  document.getElementById('fag-input').value = '';
+  document.getElementById('bsa-input').value = '';
+  document.getElementById('fag-filename').textContent = '';
+  document.getElementById('bsa-filename').textContent = '';
+  saveState();
+  updateInputCounts();
+  renderWalkingList();
+  renderAllRecords();
+  updateStats();
+}
+
+function exportProgress() {
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const date = new Date().toISOString().substring(0,10);
+  a.href = url;
+  a.download = `cemetery-search-progress-${date}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* ==========================================================
+   FILE UPLOAD HANDLING (XLSX / CSV)
+   Find a Grave's download is .xlsx with structured columns.
+   The City Clerk's BS&A export will likely be similar.
+   We parse the file in the browser via SheetJS, then convert
+   it into a clean text format that the existing text parsers
+   already handle. The text version goes into the textarea so
+   the user can see and edit it.
+   ========================================================== */
+
+function handleFileUpload(file, source) {
+  if (!file) return;
+  const filenameSpan = document.getElementById(source + '-filename');
+  filenameSpan.textContent = '⏳ Loading ' + file.name + '...';
+
+  if (typeof XLSX === 'undefined') {
+    filenameSpan.innerHTML = '<span style="color:var(--rust);">⚠ Spreadsheet library not loaded. Try refreshing this page while online.</span>';
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = e.target.result;
+      const ext = file.name.toLowerCase().split('.').pop();
+      let workbook;
+
+      if (ext === 'csv') {
+        workbook = XLSX.read(data, { type: 'string', raw: false });
+      } else {
+        workbook = XLSX.read(data, { type: 'array' });
+      }
+
+      if (!workbook.SheetNames.length) {
+        throw new Error('No sheets found in file');
+      }
+
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+
+      if (!rows.length) {
+        throw new Error('Sheet appears to be empty');
+      }
+
+      // Parse into structured records (the proper representation)
+      // and ALSO into display text for the textarea.
+      const { records, displayText } = parseSpreadsheet(rows, source);
+
+      if (records.length === 0) {
+        throw new Error('No valid records found. Check that the file has columns like Name/Last/First, dates, and plot info.');
+      }
+
+      // Store the structured records directly — these bypass the text parser at match time.
+      if (source === 'fag') {
+        state.fagFileRecords = records;
+      } else {
+        state.bsaFileRecords = records;
+      }
+
+      // Update the textarea for display (so the user can see what was loaded)
+      const textarea = document.getElementById(source + '-input');
+      textarea.value = displayText;
+
+      filenameSpan.innerHTML = '✓ Loaded <strong>' + escapeHtml(file.name) + '</strong> &mdash; ' + records.length + ' records parsed';
+      updateInputCounts();
+      saveState();
+    } catch (err) {
+      filenameSpan.innerHTML = '<span style="color:var(--rust);">⚠ Error: ' + escapeHtml(err.message) + '</span>';
+      console.error('File parse error:', err);
+    }
+  };
+
+  reader.onerror = () => {
+    filenameSpan.innerHTML = '<span style="color:var(--rust);">⚠ Could not read file</span>';
+  };
+
+  const ext = file.name.toLowerCase().split('.').pop();
+  if (ext === 'csv') {
+    reader.readAsText(file);
+  } else {
+    reader.readAsArrayBuffer(file);
+  }
+}
+
+/* ----------------------------------------------------------
+   parseSpreadsheet
+   Takes the 2D array of cells and returns:
+     - records: structured records ready for the matcher
+     - displayText: a human-readable text version for the textarea
+   ---------------------------------------------------------- */
+function parseSpreadsheet(rows, source) {
+  if (!rows.length) return { records: [], displayText: '' };
+
+  // Find the header row — must contain at least 2 keyword matches
+  let headerRowIdx = -1;
+  const headerKeywords = ['name', 'birth', 'death', 'memorial', 'section', 'lot', 'block', 'first', 'last', 'plot', 'burial'];
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const cellTexts = rows[i].map(c => String(c).toLowerCase().trim());
+    let matches = 0;
+    for (const cell of cellTexts) {
+      for (const kw of headerKeywords) {
+        if (cell.includes(kw)) { matches++; break; }
+      }
+    }
+    if (matches >= 2) { headerRowIdx = i; break; }
+  }
+  if (headerRowIdx === -1) headerRowIdx = 0;
+
+  const header = rows[headerRowIdx].map(c => String(c).toLowerCase().trim().replace(/:$/, ''));
+
+  const findColExact = (...patterns) => {
+    for (let i = 0; i < header.length; i++) {
+      for (const pat of patterns) {
+        if (header[i] === pat) return i;
+      }
+    }
+    return -1;
+  };
+
+  // Column detection — strict (exact match) to avoid "memorialId" accidentally matching "name"
+  const memorialIdIdx = findColExact('memorialid', 'memorial id', 'memorial_id');
+  const firstIdx = findColExact('firstname', 'first name', 'first');
+  const lastIdx = findColExact('lastname', 'last name', 'last', 'surname');
+  const birthIdx = findColExact('birthdate', 'birth date', 'birth', 'birth year', 'born', 'dob');
+  const deathIdx = findColExact('deathdate', 'death date', 'death', 'death year', 'died', 'dod');
+  const plotIdx = findColExact('plot');
+  const nameIdx = findColExact('name', 'deceased', 'deceased name', 'full name');
+  const residingPlotIdx = findColExact('residing plot', 'residingplot');
+  const sectionIdx = findColExact('section', 'sect');
+  const blockIdx = findColExact('block', 'blk');
+  const lotIdx = findColExact('lot');
+  const graveIdx = findColExact('grave', 'space');
+
+  const records = [];
+  const displayLines = [];
+
+  for (let r = headerRowIdx + 1; r < rows.length; r++) {
+    const row = rows[r];
+    if (!row || row.every(c => !String(c).trim())) continue;
+
+    let firstName = '', lastName = '';
+
+    // Name handling
+    if (firstIdx >= 0 && lastIdx >= 0) {
+      firstName = String(row[firstIdx] || '').trim();
+      lastName = String(row[lastIdx] || '').trim();
+    } else if (nameIdx >= 0) {
+      const full = String(row[nameIdx] || '').trim();
+      if (!full || /^\[no name\]/i.test(full)) continue;
+      // Parse "Last, First [Middle]" or "First Last" formats
+      const lastFirst = full.match(/^([^,]+),\s*(.+)$/);
+      if (lastFirst) {
+        lastName = lastFirst[1].trim();
+        firstName = lastFirst[2].trim();
+      } else {
+        // Try to split "First Last"
+        const parts = full.split(/\s+/);
+        if (parts.length >= 2) {
+          firstName = parts[0];
+          lastName = parts.slice(1).join(' ');
+        } else {
+          lastName = full;
+        }
+      }
+    } else {
+      continue; // no name column we can identify
+    }
+
+    if (!lastName) continue;
+
+    // Dates / years
+    const extractYear = (v) => {
+      if (!v) return null;
+      const s = String(v);
+      const m = s.match(/\b(1[7-9]\d{2}|20\d{2})\b/);
+      return m ? parseInt(m[1]) : null;
+    };
+    let birthYear = birthIdx >= 0 ? extractYear(row[birthIdx]) : null;
+    let deathYear = deathIdx >= 0 ? extractYear(row[deathIdx]) : null;
+
+    // Memorial ID
+    let memorialId = null;
+    if (memorialIdIdx >= 0) {
+      const id = String(row[memorialIdIdx] || '').trim();
+      if (/^\d+$/.test(id)) memorialId = id;
+    }
+
+    // Location: try multiple sources
+    let section = '', block = '', lotVal = '', grave = '', row_ = '';
+
+    // 1. Find a Grave's freeform plot column
+    if (plotIdx >= 0) {
+      const plotStr = String(row[plotIdx] || '').trim();
+      if (plotStr) {
+        const d = decodeFagPlot(plotStr);
+        section = d.section || section;
+        block = d.block || block;
+        row_ = d.row || row_;
+        lotVal = d.lot || lotVal;
+        grave = d.grave || grave;
+      }
+    }
+
+    // 2. BS&A coded plot
+    if (residingPlotIdx >= 0) {
+      const code = String(row[residingPlotIdx] || '').trim();
+      if (code) {
+        const d = decodeBsaPlotCode(code);
+        // Prefer BS&A's data only if FAG plot didn't give us anything
+        if (!section) section = d.section;
+        if (!block) block = d.block;
+        if (!lotVal) lotVal = d.lot;
+        if (!grave) grave = d.grave;
+      }
+    }
+
+    // 3. Explicit columns
+    if (sectionIdx >= 0 && !section) section = String(row[sectionIdx] || '').trim();
+    if (blockIdx >= 0 && !block) block = String(row[blockIdx] || '').trim();
+    if (lotIdx >= 0 && !lotVal) lotVal = String(row[lotIdx] || '').trim();
+    if (graveIdx >= 0 && !grave) grave = String(row[graveIdx] || '').trim();
+
+    // Build record
+    const rec = {
+      source,
+      firstName,
+      lastName,
+      birthYear,
+      deathYear,
+      memorialId,
+      section,
+      block,
+      row: row_,
+      lot: lotVal,
+      grave,
+      raw: row.map(c => String(c || '').trim()).filter(Boolean).join(' | ').substring(0, 250),
+    };
+    records.push(rec);
+
+    // Build display line
+    const parts = [];
+    parts.push(lastName + (firstName ? ', ' + firstName : ''));
+    if (birthYear) parts.push('b. ' + birthYear);
+    if (deathYear) parts.push('d. ' + deathYear);
+    if (memorialId) parts.push('Memorial #' + memorialId);
+    if (section) parts.push('Section ' + section);
+    if (block) parts.push('Block ' + block);
+    if (row_) parts.push('Row ' + row_);
+    if (lotVal) parts.push('Lot ' + lotVal);
+    if (grave) parts.push('Grave ' + grave);
+    displayLines.push(parts.join('  '));
+  }
+
+  return { records, displayText: displayLines.join('\n') };
+}
+
+
+/* ----------------------------------------------------------
+   PLOT DECODERS
+   These convert various plot formats into structured fields
+   so the matching and walking-list code can treat them uniformly.
+   ---------------------------------------------------------- */
+
+// Find a Grave's "plot" column is a freeform string like:
+//   "Round Hill Blk M Lot 16 Grave 2"
+//   "Square Hill Block E Lot 50"
+//   "Single Grave Row 6 Lot 20"
+//   "Old Part Sub 4 Lot 352"
+//   "North Hill Row J Lot 102"
+function decodeFagPlot(plotStr) {
+  const result = { section: '', block: '', row: '', lot: '', grave: '' };
+  if (!plotStr) return result;
+
+  // Find the section name (everything up to the first Block/Blk/Row/Sub/Lot keyword)
+  const sectionMatch = plotStr.match(/^(.+?)\s+(?:Block|Blk|Row|Sub|Lot)\b/i);
+  if (sectionMatch) {
+    result.section = sectionMatch[1].trim();
+  } else {
+    // Maybe just a section name with no further info
+    result.section = plotStr.trim();
+    return result;
+  }
+
+  // Block (or Blk)
+  const blockMatch = plotStr.match(/\b(?:Block|Blk)\s+([A-Z0-9]+)\b/i);
+  if (blockMatch) result.block = blockMatch[1].trim();
+
+  // Row
+  const rowMatch = plotStr.match(/\bRow\s+([A-Z0-9]+)\b/i);
+  if (rowMatch) result.row = rowMatch[1].trim();
+
+  // Sub (subdivision — treat as block-equivalent if no block)
+  if (!result.block) {
+    const subMatch = plotStr.match(/\bSub\s+([A-Z0-9]+)\b/i);
+    if (subMatch) result.block = 'Sub ' + subMatch[1].trim();
+  }
+
+  // Lot
+  const lotMatch = plotStr.match(/\bLot\s+([A-Z0-9\-]+)\b/i);
+  if (lotMatch) result.lot = lotMatch[1].trim();
+
+  // Grave
+  const graveMatch = plotStr.match(/\bGrave\s+([A-Z0-9\-]+)\b/i);
+  if (graveMatch) result.grave = graveMatch[1].trim();
+
+  return result;
+}
+
+// BS&A burial-report code: OAKGROVE-{SECTION}-{BLOCK_OR_ROW}-{LOT}-{GRAVE}
+// e.g., "OAKGROVE-13-U-070-3" = Section 13, Block U, Lot 070, Grave 3
+// Empty parts use hyphen-hyphen: "OAKGROVE-14-10--21" = Section 14, Row 10, (no lot), Grave 21
+// We translate the numeric section code into the cemetery's named section.
+// This mapping is specific to Oak Grove Cemetery, St. Louis MI.
+// Other BS&A cemeteries would have their own mappings; we fall back to the raw number.
+const OAK_GROVE_SECTION_NAMES = {
+  '04': 'Old Part',
+  '05': 'Old Part',
+  '06': 'Vault Hill',
+  '07': 'Section 07',
+  '10': 'Round Hill',
+  '11': 'Square Hill',
+  '12': 'Hofstetter Hill',
+  '13': 'Hofstetter Hill',
+  '14': 'Single Grave',
+  '15': 'Section 15',
+  '16': 'Section 16',
+  '17': 'North Hill',
+  '20': 'Section 20',
+  '25': 'Section 25',
+};
+
+function decodeBsaPlotCode(code) {
+  const result = { section: '', block: '', lot: '', grave: '' };
+  if (!code) return result;
+
+  // Split on hyphens. Format is usually OAKGROVE-SEC-BLOCK-LOT-GRAVE
+  // but Block can be a letter (E, U, J, etc.) or a number.
+  const parts = code.split('-');
+  if (parts.length < 4) {
+    result.section = code;
+    return result;
+  }
+
+  // Skip the cemetery prefix
+  const prefix = parts[0];
+  const sectionCode = parts[1] || '';
+  const blockCode = parts[2] || '';
+  const lotCode = parts[3] || '';
+  const graveCode = parts[4] || '';
+
+  // Map section number to friendly section name (Oak Grove specific)
+  if (sectionCode) {
+    result.section = OAK_GROVE_SECTION_NAMES[sectionCode] || ('Section ' + sectionCode);
+  }
+  if (blockCode) result.block = blockCode;
+  if (lotCode) result.lot = lotCode;
+  if (graveCode) result.grave = graveCode;
+
+  return result;
+}
+
+function setupDropZone(source) {
+  const dropZone = document.getElementById(source + '-drop');
+  const fileInput = document.getElementById(source + '-file');
+
+  dropZone.addEventListener('click', (e) => {
+    if (e.target.tagName !== 'INPUT') fileInput.click();
+  });
+
+  fileInput.addEventListener('change', (e) => {
+    if (e.target.files[0]) handleFileUpload(e.target.files[0], source);
+    fileInput.value = ''; // allow re-uploading same file
+  });
+
+  dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.classList.add('dragover');
+  });
+
+  dropZone.addEventListener('dragleave', (e) => {
+    if (e.target === dropZone) dropZone.classList.remove('dragover');
+  });
+
+  dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    if (e.dataTransfer.files.length) {
+      handleFileUpload(e.dataTransfer.files[0], source);
+    }
+  });
+}
+
+function importProgress(file) {
+  // Check if this is a JSON progress file or a data spreadsheet
+  const ext = file.name.toLowerCase().split('.').pop();
+  if (ext === 'xlsx' || ext === 'xls' || ext === 'csv') {
+    alert('Spreadsheet files should be dropped onto a paste box (Find a Grave or BS&A), not into Import Progress. Switch to the Setup tab and use the drop zones inside each paste box.');
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!data.matches && !data.fagInput) throw new Error('Not a valid export');
+      state = Object.assign({ fagInput:'', bsaInput:'', fagRecords:[], bsaRecords:[], matches:[], doneIds:{} }, data);
+      document.getElementById('fag-input').value = state.fagInput || '';
+      document.getElementById('bsa-input').value = state.bsaInput || '';
+      saveState();
+      updateInputCounts();
+      renderWalkingList();
+      renderAllRecords();
+      updateStats();
+      alert('Progress imported.');
+    } catch(err) {
+      alert('Could not import: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+/* ==========================================================
+   TABS
+   ========================================================== */
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + name));
+  if (name === 'walk') renderWalkingList();
+  if (name === 'all') renderAllRecords();
+}
+
+/* ==========================================================
+   INIT
+   ========================================================== */
+document.addEventListener('DOMContentLoaded', () => {
+  loadState();
+
+  // restore inputs
+  document.getElementById('fag-input').value = state.fagInput || '';
+  document.getElementById('bsa-input').value = state.bsaInput || '';
+
+  // tab switching
+  document.querySelectorAll('.tab').forEach(t => {
+    t.addEventListener('click', () => switchTab(t.dataset.tab));
+  });
+
+  // inputs
+  document.getElementById('fag-input').addEventListener('input', updateInputCounts);
+  document.getElementById('bsa-input').addEventListener('input', updateInputCounts);
+  updateInputCounts();
+
+  // file drop zones
+  setupDropZone('fag');
+  setupDropZone('bsa');
+
+  // actions
+  document.getElementById('btn-match').addEventListener('click', doMatch);
+  document.getElementById('btn-load-sample').addEventListener('click', loadSample);
+  document.getElementById('btn-clear').addEventListener('click', clearAll);
+  document.getElementById('btn-export').addEventListener('click', exportProgress);
+  document.getElementById('btn-import').addEventListener('click', () => document.getElementById('import-file').click());
+  document.getElementById('import-file').addEventListener('change', e => {
+    if (e.target.files[0]) importProgress(e.target.files[0]);
+  });
+
+  // walking list controls
+  document.getElementById('filter-text').addEventListener('input', renderWalkingList);
+  document.getElementById('sort-mode').addEventListener('change', renderWalkingList);
+  document.getElementById('hide-done').addEventListener('change', renderWalkingList);
+  document.getElementById('only-matched').addEventListener('change', renderWalkingList);
+  document.getElementById('btn-reset-progress').addEventListener('click', () => {
+    if (!confirm('Reset all check marks? (Your pasted data is kept.)')) return;
+    state.doneIds = {};
+    saveState();
+    renderWalkingList();
+    updateStats();
+  });
+
+  // all records controls
+  document.getElementById('filter-all').addEventListener('input', renderAllRecords);
+  document.getElementById('show-mode').addEventListener('change', renderAllRecords);
+
+  updateStats();
+});
+</script>
+
+</body>
+</html>

@@ -1,0 +1,20 @@
+# --- OS / Synology / IDE junk ---
+.DS_Store
+Thumbs.db
+desktop.ini
+@eaDir/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Local data files (don't commit private cemetery datasets) ---
+# This app reads .xlsx files at runtime in the browser — they should
+# not be checked in. Keep them on the device, not in the repo.
+*.xlsx
+*.xls
+*.csv
+
+# --- Scratch / preview ---
+*.bak
+*.tmp
