@@ -21,17 +21,20 @@ A field app for fulfilling Find a Grave photo requests at **38 cemeteries around
 
 ## Architecture
 
+Everything runs through one webserver — **`python app.py` from this directory** serves the app at http://localhost:8420/ and auto-refreshes data, identically on a laptop or in the Portainer container.
+
 | Piece | Purpose |
 | --- | --- |
+| `app.py` | **the Flask webserver** (serves the app, /api/status, background refresh thread) |
+| `refresher.py` | discovery, pulls, register scrapes, dataset builds |
 | `index.html`, `app-core.js`, `app-map.js`, `app-ui.js` | the app (core is DOM-free and unit-tested) |
 | `cemetery-data.js` | generated dataset: all cemeteries' requests, memorial indexes, registers, plat geometry |
-| `server/` | **Flask + refresher**: discovery, pulls, register scrapes, dataset builds (`app.py`, `refresher.py`) |
-| `server/geometry/oakgrove.json` | static georeferenced plat geometry (from `tools/`) |
-| `docker/` | Portainer stack (Dockerfile + compose) |
+| `geometry/oakgrove.json`, `seed/` | static plat geometry (from `tools/`) + register seeds baked into first boot |
+| `docker/` | Portainer stack (Dockerfile + compose + deploy tarball) |
 | `tools/` | one-time pipeline: plat-PDF extraction, RANSAC georeferencing, test suite |
 | `sw.js`, `manifest.webmanifest`, `icons/` | PWA/offline |
 
-Refresher config lives in `server/refresher.py` (`DEFAULT_CONFIG`) or a `server/config.json` override: home point, radius (default 15 mi), counties scanned, pinned cemeteries, BS&A registers.
+Refresher config lives in `refresher.py` (`DEFAULT_CONFIG`) or a `config.json` override next to it: home point, radius (default 15 mi), counties scanned, pinned cemeteries, BS&A registers. Local run: `pip install -r requirements.txt`, then `python app.py`.
 
 ## Tests
 

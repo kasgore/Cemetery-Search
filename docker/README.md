@@ -24,8 +24,11 @@ compose file (build context is the repo root).
 | `PORT` | `8420` | listen port |
 
 Wider changes (counties scanned, BS&A registers, pinned cemeteries) live in
-`server/refresher.py` `DEFAULT_CONFIG`, or drop a `server/config.json` override
-into the image/bind mount.
+`refresher.py` `DEFAULT_CONFIG` (repo root), or drop a `config.json` override
+next to it.
+
+Running without Docker is the same server: `pip install -r requirements.txt`
+then `python app.py` from the repo root — same app, same auto-refresh.
 
 ## Endpoints
 

@@ -1,23 +1,37 @@
 """
-Cemetery Search — Flask server.
+Cemetery Search — Flask server. Run from this directory:
 
-Serves the app and keeps its data fresh automatically: a background thread runs
-the refresher on a schedule (REFRESH_HOURS, default 6). On first boot with no
-data it populates itself (discovery -> pulls -> build).
+    python app.py            # serves the app on http://localhost:8420/
+
+Serves the frontend and keeps its data fresh automatically: a background
+thread runs the refresher on a schedule (REFRESH_HOURS, default 6). On first
+boot with no data it populates itself (discovery -> pulls -> build).
+
+Env knobs: PORT (8420), REFRESH_HOURS (6), RADIUS_MILES (15),
+AUTO_REFRESH=0 to disable self-updating, DATA_DIR, SITE_DIR.
 """
-import json
 import os
 import threading
-import time
 
 from flask import Flask, jsonify, send_from_directory
 
 import refresher
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SITE_DIR = os.environ.get("SITE_DIR", os.path.join(BASE_DIR, "site"))
+SITE_DIR = os.environ.get("SITE_DIR", BASE_DIR)
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
 REFRESH_HOURS = float(os.environ.get("REFRESH_HOURS", "6"))
+
+# Only the app's own assets are served — never the server code, seeds,
+# caches, or the git tree that share this directory.
+ALLOWED_FILES = {
+    "index.html", "cemetery-search.html",
+    "app-core.js", "app-map.js", "app-ui.js",
+    "cemetery-data.js", "xlsx.full.min.js",
+    "sw.js", "manifest.webmanifest",
+}
+ALLOWED_DIRS = {"icons"}
+NEVER_CACHE = {"index.html", "cemetery-data.js", "sw.js"}
 
 app = Flask(__name__)
 _state = {"refreshing": False, "last_error": None, "wake": threading.Event()}
@@ -30,8 +44,12 @@ def index():
 
 @app.get("/<path:path>")
 def static_files(path):
-    # cemetery-data.js and sw.js must never be cached stale
-    max_age = 0 if path in ("cemetery-data.js", "sw.js", "index.html") else 3600
+    parts = path.split("/")
+    ok = (len(parts) == 1 and parts[0] in ALLOWED_FILES) or \
+         (len(parts) == 2 and parts[0] in ALLOWED_DIRS)
+    if not ok:
+        return jsonify({"error": "not found"}), 404
+    max_age = 0 if path in NEVER_CACHE else 3600
     return send_from_directory(SITE_DIR, path, max_age=max_age)
 
 
@@ -78,4 +96,11 @@ def start_background_refresher():
 start_background_refresher()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8420")))
+    port = int(os.environ.get("PORT", "8420"))
+    try:
+        from waitress import serve
+        refresher.log(f"serving on http://0.0.0.0:{port}/ (waitress)")
+        serve(app, host="0.0.0.0", port=port)
+    except ImportError:
+        refresher.log(f"serving on http://0.0.0.0:{port}/ (flask dev server — pip install waitress for production)")
+        app.run(host="0.0.0.0", port=port)

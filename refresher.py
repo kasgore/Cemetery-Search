@@ -24,9 +24,11 @@ from datetime import date
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
+# Lives at the repo root: the frontend files sit next to this script, so the
+# default SITE_DIR is this directory itself (cemetery-data.js is written here).
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
-SITE_DIR = os.environ.get("SITE_DIR", os.path.join(BASE_DIR, "site"))
+SITE_DIR = os.environ.get("SITE_DIR", BASE_DIR)
 
 DEFAULT_CONFIG = {
     "home": {"lat": 43.4202995, "lng": -84.6136017},
