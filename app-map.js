@@ -348,7 +348,7 @@ MapView.prototype._bindings = function () {
       this.cx -= dx / this.scale;
       this.cy += dy / this.scale;
       this._pointers.set(ev.pointerId, cur);
-      this.draw();
+      this.queueRedraw();
     } else if (this._pointers.size === 2) {
       moved = true;
       this._pointers.set(ev.pointerId, cur);
@@ -386,7 +386,7 @@ MapView.prototype.zoomAt = function (px, py, factor) {
   const after = this.screenToWorld(px, py);
   this.cx += before.e - after.e;
   this.cy += before.n - after.n;
-  this.draw();
+  this.queueRedraw();
 };
 
 MapView.prototype.hitTest = function (x, y, radius) {

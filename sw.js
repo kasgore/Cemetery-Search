@@ -1,7 +1,7 @@
 /* Cemetery Search — service worker: precache app shell + data for full offline use.
    Strategy: cache-first for instant offline loads, with background revalidation so
    deploys reach users on their next visit without a cache-name bump. */
-const CACHE = 'cemsearch-v3';
+const CACHE = 'cemsearch-v4';
 const ASSETS = [
   './',
   './index.html',

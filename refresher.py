@@ -228,13 +228,21 @@ def merge_registry(cfg, previous, fresh):
 
 # ---------------------------------------------------------------- FAG pulls
 
-def pull_requests(cfg, cem_id):
+def pull_requests(cfg, cem_id, cem=None):
     url = (f"https://www.findagrave.com/photo-request/search/cemetery/{cem_id}"
            f"?ajax=true&skip=0&limit=1000")
     d = get_json(url)
     out = []
     for r in d.get("photoRequests") or []:
         has_gps = r.get("latLonMethod") == "memorial"
+        # junk-pin filter: FAG default pins sit exactly on the cemetery centroid
+        if has_gps and cem and r.get("latitude"):
+            try:
+                d_m = miles(cem["lat"], cem["lng"], float(r["latitude"]), float(r["longitude"])) * 1609.34
+                if d_m < 5 or d_m > 800:
+                    has_gps = False
+            except (TypeError, ValueError):
+                has_gps = False
         out.append({
             "prId": r.get("photoRequestId"),
             "mid": r.get("memorialId"),
@@ -652,7 +660,7 @@ def run_cycle(cfg, force=False):
     if force or now - ts.get("requests", 0) > cadence["requests_hours"] * 3600:
         for cem in registry["cemeteries"]:
             try:
-                reqs = pull_requests(cfg, cem["id"])
+                reqs = pull_requests(cfg, cem["id"], cem)
                 write_state(f"cem/{cem['id']}-requests.json", reqs)
                 cem["photoRequests"] = len(reqs)
                 pause(cfg)

@@ -4,6 +4,7 @@ A field app for fulfilling Find a Grave photo requests at **38 cemeteries around
 
 **Two ways to run it:**
 - **Self-hosted (recommended):** the Flask container in `docker/` serves the app *and refreshes all data on a schedule* — photo requests every 6 h, memorial indexes weekly, cemetery discovery daily (a new request anywhere nearby auto-adds that cemetery), municipal burial registers every ~60 days. See `docker/README.md` for the Portainer stack.
+- **Portainer repository deploys** use the root `docker-compose.yml` (build context = repo root).
 - **Static:** GitHub Pages (https://kasgore.github.io/Cemetery-Search/) serves the last committed dataset; refresh via the in-app bookmarklets/imports.
 
 ## What it does
@@ -11,12 +12,12 @@ A field app for fulfilling Find a Grave photo requests at **38 cemeteries around
 - **Locates graves by the best available evidence**, per request:
   1. the memorial's own GPS pin;
   2. **lot positions from georeferenced city plat maps** (Oak Grove: 23 vector PDFs from the city, fitted with RANSAC against 450+ GPS-tagged memorials — 3–8 m typical);
-  3. **GPS-anchor clustering**: any cemetery's GPS-tagged memorials, grouped by parsed plot (same lot → ~2–6 m; adjacent lot, block, section fall-backs);
+  3. **GPS-anchor clustering**: any cemetery's GPS-tagged memorials, grouped by parsed plot (same lot → ±6–18 m depending on how many pins agree; adjacent lot, block, section fall-backs with honest radii);
   4. **municipal burial registers** (BS&A Online: Oak Grove/St. Louis uid 2024, Riverside/Alma uid 1205) supply Section/Block/Lot for requests Find a Grave has no plot for, matched by name+dates with nickname/spelling tolerance;
   5. **family leads** when nothing else exists: same-surname burials with locatable graves (spouses usually share the lot).
 - **Walking list** across all cemeteries (nearest first, drive links) or per cemetery grouped by section, with per-grave status (photographed / no stone / not found), notes, requester hints, and **neighbor packs** (adjacent burials, 📷 = photographed stone to use as a visual anchor).
 - **Guide mode**: declination-corrected compass arrow + live distance + honest accuracy circle; offline canvas map (lot grids, block letters, sections, your blue dot).
-- **Offline search of ~75,000 burials** — memorials + registers, cross-matched.
+- **Offline search of ~72,000 burials** — memorials + registers, cross-matched.
 - **PWA**: installs to the home screen, fully offline in the field (HTTPS required for GPS/compass — see docker/README.md).
 
 ## Architecture

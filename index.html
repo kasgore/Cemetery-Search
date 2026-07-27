@@ -10,14 +10,15 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,600;0,700;1,600&family=JetBrains+Mono:wght@400;700&display=swap">
 <style>
   /* ==========================================================
      Cemetery Search — Grave Finder (Oak Grove field edition)
      Weathered field-journal aesthetic; tuned for outdoor
      legibility: high contrast, large touch targets.
      ========================================================== */
-  @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
-
   :root {
     --bg: #f2ecdf;
     --bg-deep: #e3dac6;
@@ -274,7 +275,8 @@
     <div style="min-width:0;">
       <h1>Cemetery Search <span class="ornament">&#x2767;</span></h1>
       <div class="subtitle" id="subtitle">Loading…</div>
-      <select id="cem-select" style="margin-top:6px; max-width:min(78vw,430px); font-family:var(--font-mono); font-size:0.72rem; padding:6px 8px; background:var(--bg); border:1px solid var(--stone-light); color:var(--ink);"></select>
+      <label for="cem-select" class="subtitle" style="display:block; margin-top:8px; color:var(--moss-dark);">Cemetery</label>
+      <select id="cem-select" style="margin-top:2px; max-width:min(78vw,430px); font-family:var(--font-mono); font-size:0.72rem; padding:6px 8px; background:var(--bg); border:1px solid var(--stone-light); color:var(--ink);"></select>
     </div>
     <div class="head-stats">
       <span id="gps-chip" title="Tap to toggle GPS">GPS off</span><br>
@@ -295,6 +297,7 @@
 
   <!-- WALK -->
   <section class="panel active" id="panel-walk">
+    <div id="nearest-banner" class="card" style="display:none; padding:10px 14px; margin-bottom:10px; border-left:4px solid var(--moss);"></div>
     <div class="controls">
       <input type="text" id="walk-filter" placeholder="filter name / plot..." style="flex:1; min-width:110px;">
       <label>Sort <select id="walk-sort">
@@ -304,6 +307,7 @@
         <option value="conf">Best located first</option>
       </select></label>
       <label><input type="checkbox" id="walk-hidedone" checked> hide finished</label>
+      <button class="mini" id="walk-finished" title="Everything you've marked, with notes and saved GPS — for fulfilling on Find a Grave">Finished list</button>
     </div>
     <div id="walk-list"></div>
   </section>
@@ -323,18 +327,19 @@
     <div class="map-legend">
       <span><span class="dot" style="background:#8b3a1f;"></span>to find</span>
       <span><span class="dot" style="background:#2e7d32;"></span>done</span>
-      <span><span class="dot" style="background:#a07a2c;"></span>no stone / issue</span>
+      <span><span class="dot" style="background:#a07a2c;"></span>no stone / issue / from search</span>
       <span><span class="dot" style="background:#2b5c7a;"></span>you</span>
       <span><span class="dot" style="background:#b9b09c;"></span>lot grid</span>
+      <span><span class="dot" style="border:1.5px dashed #8b3a1f; background:transparent;"></span>search circle</span>
     </div>
-    <div class="small" style="padding:4px 2px;">Tap a marker for details. The aerial layer is USGS NAIP photography (🛰 toggles it); grid positions come from city plat maps and GPS-tagged memorials — accuracy varies by cemetery and is shown per grave.</div>
+    <div class="small" style="padding:4px 2px;">Tap a marker for details; &#x26F6; switches between this cemetery and the whole region. The aerial layer is USGS NAIP photography (🛰 toggles it). Dot positions come from plat maps (Oak Grove) and GPS-tagged memorials — the accuracy for each grave is shown on its card.</div>
   </section>
 
   <!-- SEARCH -->
   <section class="panel" id="panel-search">
     <div class="card">
-      <input type="text" id="search-input" class="texty" placeholder="Search any name — all 7,600+ burials, works offline">
-      <div class="small" style="margin-top:6px;">Searches Find a Grave memorials and the city burial register. Tap a result to locate it on the map or start guidance.</div>
+      <input type="text" id="search-input" class="texty" placeholder="Search any name — works offline">
+      <div class="small" style="margin-top:6px;">Searches Find a Grave memorials for every cemetery here, plus the city burial registers (Oak Grove and Riverside have them). Tap a result to locate it on the map or start guidance.</div>
     </div>
     <div id="search-results"></div>
   </section>
@@ -402,7 +407,7 @@
       <h2>Install on your phone</h2>
       <p><strong>iPhone:</strong> open this page in Safari → Share button → <em>Add to Home Screen</em>. Install it <em>before</em> you build up progress: the installed app keeps its own storage and is exempt from Safari's 7-day cleanup. (Already have progress in Safari? <em>Export progress</em> there, then <em>Import progress</em> inside the installed app — the browser tab and the installed app do not share saves.)</p>
       <p><strong>Android:</strong> Chrome menu (&#8942;) → <em>Add to Home screen</em> (or tap the install prompt).</p>
-      <p class="small">Once installed it works fully offline — all 7,600+ records, the maps, and your progress live on the phone. GPS needs no signal; only the "Open Find a Grave" links need data.</p>
+      <p class="small">Once installed it works fully offline — <span id="install-count">all 67,000+ records, the maps,</span> and your progress live on the phone. GPS needs no signal; only the "Open Find a Grave" links and aerial imagery for new areas need data.</p>
     </div>
   </section>
 
@@ -410,20 +415,20 @@
   <section class="panel" id="panel-help">
     <div class="card">
       <h2>How this app finds graves</h2>
-      <p>Every photo request is located by the best available evidence, in this order:</p>
+      <p>When a request has any plot or GPS evidence, it's located by the best of it — the colored chip on each card names the level and an honest accuracy radius:</p>
       <ol>
-        <li><span class="badge">GPS</span> the memorial's own pin (rare — most requests have none);</li>
-        <li><span class="badge">LOT</span> the exact lot position from the <strong>city plat maps</strong>, georeferenced with 450+ GPS-tagged memorials (usually within a few graves);</li>
-        <li><span class="badge gold">BLOCK</span> the block/row when the lot isn't drawn (10–30 m);</li>
-        <li><span class="badge rust">SECTION</span> the section area only (~40 m) — use neighbors to close in.</li>
+        <li><span class="badge">GPS PIN</span> the grave's own pin, or its memorial's (±8 m);</li>
+        <li><span class="badge">LOT</span> the exact lot — at Oak Grove from the <strong>city plat maps</strong> (georeferenced with 580+ GPS-tagged stones); everywhere else from GPS-tagged memorials in the same lot. Multiple agreeing pins beat one lone pin, so the chip shows the pin count;</li>
+        <li><span class="badge gold">NEAR LOT / BLOCK</span> pins in adjacent lots or the block/row area (±14–45 m);</li>
+        <li><span class="badge rust">SECTION</span> the section area only — the radius shown is that section's real measured extent.</li>
       </ol>
-      <p>The colored dot on each card shows which level you have, with an accuracy estimate in meters.</p>
+      <p><strong>Most requests (about 3 in 4) have no plot on record anywhere.</strong> For those the app gives you what an experienced hunter uses instead: the <em>city burial register</em> when one exists (Oak Grove and Riverside — matched by name and dates; a "verify" badge means check it's the same person), and <em>family leads</em> under the Neighbors button — same-surname burials with known spots, because spouses usually share the lot.</p>
     </div>
     <div class="card">
       <h2>Field technique</h2>
       <ul>
         <li><strong>Use the neighbors list.</strong> Tap <em>Neighbors</em> on any target: people buried in the same lot and the adjacent lots, with a &#x1F4F7; marking ones whose stones are already photographed on Find a Grave. Walk to a photographed neighbor (tap it to see the stone's photo), then count stones — the spouse is very often in the same lot even if unmarked.</li>
-        <li><strong>Lot geometry:</strong> lots climb <em>south to north</em> at about 3 m per lot number; odd lots sit west, even lots east, in pairs. Blocks are strips labeled at one end. Graves are ~2.5 ft wide, lots hold 4–8.</li>
+        <li><strong>Lot geometry at Oak Grove:</strong> lots climb <em>south to north</em> at about 3 m per lot number; odd lots sit west, even lots east, in pairs; blocks are strips labeled at one end. <em>Other cemeteries number their own way</em> — trust the dots and the neighbors, not this rule. Graves are ~2.5 ft wide; lots hold 4–8.</li>
         <li><strong>No stone?</strong> That's a real answer: photograph the spot in context with surrounding stones and note "unmarked" in the caption when fulfilling — or mark <em>No stone</em> here and flag the request on Find a Grave so the requester learns the outcome.</li>
         <li><strong>Reading worn stones:</strong> raking light (sun ~30&deg; across the face) is everything. East-facing stones read best late morning; west-facing early afternoon. A spray bottle of water raises contrast; a mirror or foil board throws light on shaded faces.</li>
         <li><strong>Kit:</strong> water spray, soft brush, grass clippers, trowel, mirror/foil, battery pack.</li>
@@ -433,13 +438,22 @@
       <h2>Compass &amp; GPS notes</h2>
       <ul>
         <li>Phone GPS is good to 3–8 m outdoors — it gets you to the right lot/row, then your eyes take over.</li>
-        <li>The arrow needs the compass permission (it will ask on first use). Hold the phone flat; keep away from cars and metal fences. True-north correction (−6.6&deg; declination) is applied automatically.</li>
-        <li>GPS only works over HTTPS — use the installed app or the github.io address, not a copied file.</li>
+        <li>The arrow needs the compass permission (it will ask on first use). Hold the phone flat; keep away from cars and metal fences. The true-north correction for this area is applied automatically.</li>
+        <li>GPS only works over <strong>HTTPS</strong>: use the installed app, or the home server's <code>https://</code> address (accept its certificate warning once per device). Plain <code>http://</code> shows everything but can't navigate.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>Badges &amp; marks</h2>
+      <ul class="small">
+        <li><span class="badge sky">register</span> — plot from a city burial register (more precise than Find a Grave's).</li>
+        <li><span class="badge outline">register match — verify</span> — the register row was matched by name/date similarity; make sure it's the same person.</li>
+        <li><span class="badge rust">verify plot</span> — Find a Grave and the register disagree about where this grave is; check both.</li>
+        <li><span class="badge stone">vet</span> — veteran. &#x1F4F7; — that stone already has a photo (a visual anchor). 📝 — you left a field note. 📍 — you saved GPS at the grave.</li>
       </ul>
     </div>
     <div class="card">
       <h2>Data sources</h2>
-      <p class="small" id="about-data">Preloaded: Find a Grave cemetery #1252 photo requests and memorial index; City of St. Louis plat maps (<a href="https://www.stlouismi.com/government/city-clerk/cemetery/" target="_blank" rel="noopener">stlouismi.com</a>); BS&amp;A Online public burial register. City Clerk: Jamie Long, (989) 681-2137 ext. 1050, jlong@stlouismi.com — can provide roster exports and confirm grave numbering within lots.</p>
+      <p class="small" id="about-data">Preloaded and auto-refreshed by the home server: Find a Grave photo requests and memorial indexes for every cemetery within 15 miles that has open requests (requests every 6 h, indexes weekly, new cemeteries appear automatically); City of St. Louis plat maps for Oak Grove (<a href="https://www.stlouismi.com/government/city-clerk/cemetery/" target="_blank" rel="noopener">stlouismi.com</a>); BS&amp;A Online public burial registers for Oak Grove (St. Louis) and Riverside (Alma); USGS NAIP aerial photography. St. Louis City Clerk: Jamie Long, (989) 681-2137 ext. 1050 — can confirm Oak Grove grave numbering within lots.</p>
       <p class="small">Everything stays on your device. Progress auto-saves; use <em>Export progress</em> for a backup before long trips.</p>
     </div>
   </section>
@@ -467,7 +481,8 @@
       <button class="secondary" id="guide-savegps">Save GPS here</button>
       <button class="primary" id="guide-done">&#x2713; Photographed</button>
       <button class="secondary" id="guide-nostone">No stone found</button>
-      <textarea id="guide-note" class="texty wide" placeholder="Field note (auto-saves)…" style="grid-column:1/-1; min-height:44px; font-family:var(--font-mono); font-size:0.8rem; padding:8px;"></textarea>
+      <button class="secondary" id="guide-notfound">Not found</button>
+      <textarea id="guide-note" class="texty" placeholder="Field note (auto-saves)…" style="grid-column:1/-1; min-height:44px; font-family:var(--font-mono); font-size:0.8rem; padding:8px;"></textarea>
     </div>
     <div class="neighbors" id="guide-neighbors"></div>
   </div>

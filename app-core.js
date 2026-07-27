@@ -77,7 +77,7 @@ CS.parsePlot = function (plotStr, profile) {
 
   /* generic profile */
   let sub = (s.match(/\bSub\.?\s*:?\s*(\d+)\b/i) || [])[1] || '';
-  let block = normBlock((s.match(/\b(?:Blk|Block|Row)[\s\-:#]*([A-Z]{1,2}|\d{1,3})\b/i) || [])[1] || '');
+  let block = normBlock((s.match(/\b(?:Blk|Block|Row)[\s\-:#]*([A-Z]{1,2}|\d{1,3}[A-Z]?)\b/i) || [])[1] || '');
   let lot = (s.match(/\bLot[\s\-:#]*([A-Z0-9]+(?:[-/][A-Z0-9]+)?)\b/i) || [])[1] || '';
   let grave = (s.match(/\b(?:Grave|Space|Sp)[\s\-:#]*([A-Z0-9]+(?:[-/][A-Z0-9]+)?)\b/i) || [])[1] || '';
   const plotTok = (s.match(/\bPlot[\s\-:#]*([A-Z0-9]+(?:[-/][A-Z0-9]+)?)\b/i) || [])[1] || '';
@@ -112,6 +112,8 @@ CS.parsePlot = function (plotStr, profile) {
       if (m) { section = '*'; lot = m[1]; grave = m[2].toUpperCase(); }
       else if (/^[A-Za-z]{1,2}$/.test(s)) { section = '*'; block = s.toUpperCase(); }
       else if (/^\d{1,4}$/.test(s)) { section = '*'; lot = s; }
+      // a bare section name ("New Addition", "East Side") still buckets anchors usefully
+      else if (/^[A-Za-z][A-Za-z .'&]{2,29}$/.test(s) && !/^(unknown|none|n\/?a)$/i.test(s)) section = s.trim();
       else return null;
     }
   }
@@ -161,7 +163,7 @@ const NICK = {
   fran:'frances', frank:'franklin', fred:'frederick', freddie:'frederick', gene:'eugene', geo:'george',
   gerry:'gerald', gus:'augustus', hal:'harold', hank:'henry', hattie:'harriet', harry:'henry', herb:'herbert',
   hetty:'henrietta', jack:'john', jackie:'jacqueline', jake:'jacob', jas:'james', jen:'jennifer',
-  jennie:'jane', jenny:'jane', jerry:'gerald', jim:'james', jimmy:'james', jno:'john', joe:'joseph',
+  jennie:'jane', jenny:'jane', jerry:'gerald', jim:'james', jimmy:'james', jno:'john', johann:'john', joe:'joseph',
   joey:'joseph', johnny:'john', jos:'joseph', josh:'joshua', josie:'josephine', kate:'catherine',
   katie:'catherine', kathy:'catherine', ken:'kenneth', kenny:'kenneth', kit:'christopher', larry:'lawrence',
   len:'leonard', lena:'helena', leo:'leonard', les:'leslie', lettie:'letitia', libby:'elizabeth',
@@ -206,7 +208,8 @@ CS.soundex = function (s) {
 // split "Last, First Middle" or "First Middle Last"; suffixes (Jr/Sr/III) are not surnames
 const SUFFIX_RE = /^(jr|sr|ii|iii|iv|v)\.?,?$/i;
 CS.splitName = function (full) {
-  const s = String(full || '').trim();
+  // parentheticals ("SMITH, MARY (BAKER??)") poison first-name comparison
+  const s = String(full || '').replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
   const lastFirst = s.match(/^([^,]+),\s*(.*)$/);
   if (lastFirst) {
     let last = lastFirst[1].trim().split(/\s+/);
@@ -293,6 +296,12 @@ CS.buildModel = function (data, updates) {
       plot: plot || '', p, lat: lat != null ? lat : null, lng: lng != null ? lng : null,
       hasGravePhoto: !!(flags & 1), hasRequest: !!(flags & 2), veteran: !!(flags & 4),
       last: sn.last, first: sn.first,
+      // normalized keys cached once — scorePair/search must never re-normalize per pair
+      nl: CS.normName(sn.last), sx: CS.soundex(sn.last),
+      nm: maiden ? CS.normName(maiden) : '',
+      cf: CS.canonFirst(sn.first), fr: CS.normName(sn.first).split(' ')[0] || '',
+      sk: CS.normName(name) + (maiden ? ' ' + CS.normName(maiden) : ''),
+      dyb: false,
     };
     model.memorials.push(mem);
     model.memById.set(mid, mem);
@@ -314,6 +323,7 @@ CS.buildModel = function (data, updates) {
       if (/^\d+$/.test(rSection)) rSection = 'Section ' + rSection.replace(/^0+(?=\d)/, '');
       else if (!rSection && (block || rLot)) rSection = '*';
     }
+    const fmr = formerName ? CS.splitName(formerName) : null;
     model.roster.push({
       kind: 'ros', key, name, sex: sex || '', bd: bd || '', dd: dd || '', burial: burial || '',
       by: yOf(bd), dy: yOf(dd) || yOf(burial),
@@ -321,6 +331,11 @@ CS.buildModel = function (data, updates) {
       lot: rLot, grave: rGrave,
       status: status || '', veteran: !!(flags & 4), note: note || '', formerName: formerName || '',
       last: sn.last, first: sn.first,
+      nl: CS.normName(sn.last), sx: CS.soundex(sn.last),
+      nm: fmr ? CS.normName(fmr.last || formerName) : '',
+      cf: CS.canonFirst(sn.first), fr: CS.normName(sn.first).split(' ')[0] || '',
+      sk: CS.normName(name) + (formerName ? ' ' + CS.normName(formerName) : ''),
+      dyb: !yOf(dd) && !!yOf(burial), // "death year" actually came from the burial date
     });
   }
 
@@ -330,14 +345,18 @@ CS.buildModel = function (data, updates) {
   for (const r of reqRows) {
     const mid = +r.mid || null;
     if (!mid) continue;
+    const fn = r.fn || '', ln = r.ln || '';
     model.requests.push({
       kind: 'req',
-      prId: r.prId, mid, name: r.name || ((r.fn || '') + ' ' + (r.ln || '')).trim(),
-      fn: r.fn || '', ln: r.ln || '', by: r.by || null, dy: r.dy || null,
+      prId: r.prId, mid, name: r.name || (fn + ' ' + ln).trim(),
+      fn, ln, by: r.by || null, dy: r.dy || null,
       bd: r.bd || '', dd: r.dd || '', plot: r.plot || '', notes: r.notes || '',
       req: r.req || '', created: r.created || '',
       lat: r.lat != null ? r.lat : null, lng: r.lng != null ? r.lng : null,
       p: CS.parsePlot(r.plot, profile),
+      nl: CS.normName(ln), sx: CS.soundex(ln), nm: '',
+      cf: CS.canonFirst(fn), fr: CS.normName(fn).split(' ')[0] || '',
+      dyb: false, section: '', block: '', lot: '',
     });
   }
 
@@ -378,8 +397,16 @@ function deriveSections(model) {
   for (const [sec, pts] of bySec) {
     if (pts.length < 3) continue;
     const med = arr => { const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
-    const ll = model.proj.toLL(med(pts.map(p => p.e)), med(pts.map(p => p.n)));
-    model.sections[sec] = { lat: +ll.lat.toFixed(6), lng: +ll.lng.toFixed(6), anchors: pts.length, derived: true };
+    const ce = med(pts.map(p => p.e)), cn = med(pts.map(p => p.n));
+    const ll = model.proj.toLL(ce, cn);
+    // honest section radius: 80th-percentile anchor distance from the centroid
+    const dists = pts.map(p => Math.hypot(p.e - ce, p.n - cn)).sort((a, b) => a - b);
+    const p80 = dists[Math.floor(0.8 * (dists.length - 1))];
+    model.sections[sec] = {
+      lat: +ll.lat.toFixed(6), lng: +ll.lng.toFixed(6),
+      anchors: pts.length, derived: true,
+      radius: Math.round(Math.min(160, Math.max(30, p80))),
+    };
   }
 }
 
@@ -408,27 +435,17 @@ function buildPlotIndex(model) {
 /* roster <-> memorial matching */
 function matchRosterToMemorials(model) {
   const byLast = new Map();
+  const add = (k, m) => { if (!byLast.has(k)) byLast.set(k, []); byLast.get(k).push(m); };
   for (const m of model.memorials) {
-    const keyA = CS.normName(m.last);
-    const keyB = CS.soundex(m.last);
-    for (const k of [ 'n:' + keyA, 's:' + keyB ]) {
-      if (!byLast.has(k)) byLast.set(k, []);
-      byLast.get(k).push(m);
-    }
-    if (m.maiden) {
-      const k = 'n:' + CS.normName(m.maiden);
-      if (!byLast.has(k)) byLast.set(k, []);
-      byLast.get(k).push(m);
-    }
+    add('n:' + m.nl, m);
+    add('s:' + m.sx, m);
+    if (m.nm) add('n:' + m.nm, m);
   }
   for (const r of model.roster) {
     const cands = new Set();
-    for (const m of (byLast.get('n:' + CS.normName(r.last)) || [])) cands.add(m);
-    for (const m of (byLast.get('s:' + CS.soundex(r.last)) || [])) cands.add(m);
-    if (r.formerName) {
-      const fn = CS.splitName(r.formerName);
-      for (const m of (byLast.get('n:' + CS.normName(fn.last || r.formerName)) || [])) cands.add(m);
-    }
+    for (const m of (byLast.get('n:' + r.nl) || [])) cands.add(m);
+    for (const m of (byLast.get('s:' + r.sx) || [])) cands.add(m);
+    if (r.nm) for (const m of (byLast.get('n:' + r.nm) || [])) cands.add(m);
     let best = null, bestScore = 0, second = 0;
     for (const m of cands) {
       const s = scorePair(r, m);
@@ -443,32 +460,51 @@ function matchRosterToMemorials(model) {
     }
   }
 }
+// small Levenshtein bound check (<=2 edits) for spelling variants like Mabel/Mable
+function lev2(a, b) {
+  const la = a.length, lb = b.length;
+  if (Math.abs(la - lb) > 2) return false;
+  const prev = new Array(lb + 1), cur = new Array(lb + 1);
+  for (let j = 0; j <= lb; j++) prev[j] = j;
+  for (let i = 1; i <= la; i++) {
+    cur[0] = i;
+    let rowMin = i;
+    for (let j = 1; j <= lb; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (cur[j] < rowMin) rowMin = cur[j];
+    }
+    if (rowMin > 2) return false;
+    for (let j = 0; j <= lb; j++) prev[j] = cur[j];
+  }
+  return prev[lb] <= 2;
+}
+// r and m must both carry cached keys (nl, sx, nm?, cf, fr, by, dy, dyb)
 function scorePair(r, m) {
   let s = 0;
-  const rl = CS.normName(r.last), ml = CS.normName(m.last), mm = CS.normName(m.maiden);
-  if (rl && (rl === ml || rl === mm)) s += 30;
-  else if (CS.soundex(r.last) === CS.soundex(m.last)) s += 18;
+  if (r.nl && (r.nl === m.nl || (m.nm && r.nl === m.nm) || (r.nm && r.nm === m.nl))) s += 30;
+  else if (r.sx === m.sx) s += 18;
   else return 0;
-  const rf = CS.canonFirst(r.first), mf = CS.canonFirst(m.first);
-  const rfRaw = CS.normName(r.first).split(' ')[0] || '', mfRaw = CS.normName(m.first).split(' ')[0] || '';
-  if (rf && mf) {
-    if (rf === mf || rfRaw === mfRaw) s += 30;
+  const rfRaw = r.fr, mfRaw = m.fr;
+  if (r.cf && m.cf) {
+    if (r.cf === m.cf || rfRaw === mfRaw) s += 30;
     else if (rfRaw && mfRaw && (rfRaw.startsWith(mfRaw) || mfRaw.startsWith(rfRaw))) s += 20;
+    else if (rfRaw.length >= 4 && mfRaw.length >= 4 && rfRaw[0] === mfRaw[0] && lev2(rfRaw, mfRaw)) s += 22; // spelling variants
     else if (rfRaw.length === 1 || mfRaw.length === 1) { if (rfRaw[0] === mfRaw[0]) s += 6; }
     else if (rfRaw[0] === mfRaw[0]) s += 2;
     else s -= 40; // contradicting full first names: almost certainly a different person (spouse trap)
   }
-  // years
+  // years — soften when either side's death year is really a burial year (reinterments)
+  const soft = r.dyb || m.dyb;
   if (r.by && m.by) {
     const d = Math.abs(r.by - m.by);
     s += d === 0 ? 25 : d <= 1 ? 15 : d <= 3 ? 2 : -20;
   }
   if (r.dy && m.dy) {
     const d = Math.abs(r.dy - m.dy);
-    s += d === 0 ? 25 : d <= 1 ? 15 : d <= 3 ? 2 : -20;
+    s += d === 0 ? (soft ? 18 : 25) : d <= 1 ? (soft ? 12 : 15) : d <= 3 ? 2 : (soft ? -8 : -20);
   }
-  // plot agreement
-  if (r.section && m.p && m.p.section) {
+  // plot agreement — '*' means "no section info", never evidence either way
+  if (r.section && r.section !== '*' && m.p && m.p.section && m.p.section !== '*') {
     if (r.section === m.p.section) {
       s += 8;
       const lotsMatch = (isFinite(+r.lot) && isFinite(+m.p.lot) && r.lot !== '' && m.p.lot !== '')
@@ -499,15 +535,18 @@ function anchorLocate(model, p, lotNum) {
   if (exact && exact.length) {
     const c = anchorCluster(exact);
     const ll = model.proj.toLL(c.e, c.n);
-    return { ...ll, acc: Math.round(Math.min(18, Math.max(6, 6 + c.spread / 2))), level: 'lot', map: null, xy: null, src: 'anchors' };
+    // one lone pin deserves less confidence than several agreeing family stones
+    const floor = c.count === 1 ? 10 : 6;
+    return { ...ll, acc: Math.round(Math.min(18, Math.max(floor, floor + c.spread / 2))), level: 'lot', map: null, xy: null, src: 'anchors', pins: c.count };
   }
   // adjacent numeric lots in the same block
   if (isFinite(lotNum)) {
     const near = [];
+    let pinCount = 0;
     for (let d = 1; d <= 3; d++) {
       for (const l of [lotNum - d, lotNum + d]) {
         const pts = model.anchorIndex.get(base + l);
-        if (pts) { const c = anchorCluster(pts); near.push({ c, w: 1 / (1 + d) }); }
+        if (pts) { const c = anchorCluster(pts); near.push({ c, w: 1 / (1 + d) }); pinCount += c.count; }
       }
       if (near.length >= 2) break;
     }
@@ -515,7 +554,7 @@ function anchorLocate(model, p, lotNum) {
       let se = 0, sn = 0, sw = 0;
       for (const { c, w } of near) { se += c.e * w; sn += c.n * w; sw += w; }
       const ll = model.proj.toLL(se / sw, sn / sw);
-      return { ...ll, acc: 14, level: 'adjacent', map: null, xy: null, src: 'anchors' };
+      return { ...ll, acc: pinCount > 1 ? 14 : 17, level: 'adjacent', map: null, xy: null, src: 'anchors', pins: pinCount };
     }
   }
   // block cluster
@@ -525,7 +564,7 @@ function anchorLocate(model, p, lotNum) {
     if (pts.length >= 2) {
       const c = anchorCluster(pts);
       const ll = model.proj.toLL(c.e, c.n);
-      return { ...ll, acc: Math.round(Math.min(45, Math.max(18, 15 + c.spread / 2))), level: 'block', map: null, xy: null, src: 'anchors' };
+      return { ...ll, acc: Math.round(Math.min(45, Math.max(18, 15 + c.spread / 2))), level: 'block', map: null, xy: null, src: 'anchors', pins: c.count };
     }
   }
   return null;
@@ -547,16 +586,19 @@ CS.locate = function (model, p) {
     const hits = m.entries.filter(e => (!p.block || e[0] === p.block || m.style === 'lots') &&
       String(e[1]) === String(isFinite(lotNum) ? lotNum : p.lot) &&
       (m.style !== 'lots' || !p.block || true));
-    if (hits.length === 1) {
-      const ll = applyT(m.transform, hits[0][2], hits[0][3]);
-      return { ...model.proj.toLL(ll.e, ll.n), acc: qualityAcc(m, 'lot'), level: 'lot', map: m, xy: [hits[0][2], hits[0][3]] };
-    }
-    if (hits.length > 1 && p.block) {
+    let hit = hits.length === 1 ? hits[0] : null;
+    if (!hit && hits.length > 1 && p.block) {
       const bh = hits.filter(e => e[0] === p.block);
-      if (bh.length === 1) {
-        const ll = applyT(m.transform, bh[0][2], bh[0][3]);
-        return { ...model.proj.toLL(ll.e, ll.n), acc: qualityAcc(m, 'lot'), level: 'lot', map: m, xy: [bh[0][2], bh[0][3]] };
-      }
+      if (bh.length === 1) hit = bh[0];
+    }
+    if (hit) {
+      const ll = applyT(m.transform, hit[2], hit[3]);
+      const fix = { ...model.proj.toLL(ll.e, ll.n), acc: qualityAcc(m, 'lot'), level: 'lot', map: m, xy: [hit[2], hit[3]] };
+      // sanity: if same-lot GPS pins disagree with the plat position by a lot,
+      // keep the map fix but say so — the volunteer should check both spots
+      const a = anchorsAt();
+      if (a && a.level === 'lot' && CS.distM(fix.lat, fix.lng, a.lat, a.lng) > 25) fix.disputed = true;
+      return fix;
     }
   }
   // same-lot GPS anchors beat everything except a drawn map lot
@@ -595,9 +637,9 @@ CS.locate = function (model, p) {
   }
   // block-level anchor cluster
   { const a = anchorsAt(); if (a) return a; }
-  // section centroid
+  // section centroid — accuracy from the section's real anchor spread when known
   const sec = model.sections[p.section];
-  if (sec) return { lat: sec.lat, lng: sec.lng, acc: 45, level: 'section', map: null, xy: null };
+  if (sec) return { lat: sec.lat, lng: sec.lng, acc: sec.radius || 45, level: 'section', map: null, xy: null };
   return null;
 };
 function applyT(T, x, y) { return { e: T.a * x + T.b * y + T.c, n: T.d * x + T.f * y + T.g }; }
@@ -617,29 +659,48 @@ function enrichRequest(model, req) {
   req.mem = mem || null;
   // roster link via memorial match, else direct fuzzy
   req.ros = (mem && mem.ros) || null;
+  req.rosScore = req.ros && mem ? (mem.rosScore || 0) : 0;
   if (!req.ros) {
     let best = null, bestScore = 0;
-    const rl = CS.normName(req.ln), rs = CS.soundex(req.ln);
     for (const r of model.roster) {
-      if (CS.normName(r.last) !== rl && CS.soundex(r.last) !== rs) continue;
-      const s = scorePair({ last: req.ln, first: req.fn, by: req.by, dy: req.dy, section: '', block: '', lot: '' }, {
-        last: r.last, first: r.first, by: r.by, dy: r.dy, maiden: '', p: null,
-      });
+      if (r.nl !== req.nl && r.sx !== req.sx) continue;
+      const s = scorePair(req, { nl: r.nl, sx: r.sx, nm: r.nm, cf: r.cf, fr: r.fr, by: r.by, dy: r.dy, dyb: r.dyb, p: null });
       if (s > bestScore) { bestScore = s; best = r; }
     }
-    if (best && bestScore >= 70) req.ros = best;
+    if (best) {
+      // relaxed acceptance when identity is unambiguous (exact names, no contradicting year)
+      const exactNames = best.nl === req.nl && (best.cf === req.cf || best.fr === req.fr) && req.fr;
+      const yearsOk = !(req.dy && best.dy && Math.abs(req.dy - best.dy) > 3) &&
+                      !(req.by && best.by && Math.abs(req.by - best.by) > 3);
+      if (bestScore >= 70 || (bestScore >= 58 && exactNames && yearsOk)) {
+        req.ros = best;
+        req.rosScore = bestScore;
+      }
+    }
   }
+  req.rosVerify = !!(req.ros && req.rosScore > 0 && req.rosScore < 85);
   // best plot info: locate BOTH sources and keep whichever resolves more precisely
   req.pFag = req.p;
   req.pRos = req.ros && req.ros.section ? { section: req.ros.section, sub: req.ros.sub, block: req.ros.block, lot: req.ros.lot, grave: req.ros.grave } : null;
   // '*' is the "no section info" sentinel — never a disagreement by itself
   req.plotConflict = !!(req.pFag && req.pRos && req.pFag.section && req.pRos.section &&
     ((req.pFag.section !== req.pRos.section && req.pFag.section !== '*' && req.pRos.section !== '*') ||
+     (req.pFag.sub && req.pRos.sub && req.pFag.sub !== req.pRos.sub) ||
      (req.pFag.block && req.pRos.block && req.pFag.block !== req.pRos.block) ||
      (req.pFag.lot && req.pRos.lot && isFinite(+req.pFag.lot) && isFinite(+req.pRos.lot) && String(+req.pFag.lot) !== String(+req.pRos.lot))));
-  // location cascade
-  if (req.lat != null && req.lng != null) {
+  // location cascade — request GPS first, but ONLY if it isn't a junk pin sitting
+  // exactly on the cemetery centroid (Find a Grave default pins leak through)
+  const cem = model.meta.cem;
+  const reqGpsReal = req.lat != null && req.lng != null &&
+    CS.distM(req.lat, req.lng, cem.lat, cem.lng) >= 5 &&
+    CS.distM(req.lat, req.lng, cem.lat, cem.lng) <= 800;
+  const memPin = req.mem && req.mem.lat != null ? req.mem : null;
+  if (reqGpsReal) {
     req.loc = { lat: req.lat, lng: req.lng, acc: 8, level: 'gps', map: null };
+    req.pBest = req.pRos || req.pFag || null;
+  } else if (memPin) {
+    // the memorial's own pin (already junk-filtered at build time) is the next-best truth
+    req.loc = { lat: memPin.lat, lng: memPin.lng, acc: 8, level: 'gps', map: null };
     req.pBest = req.pRos || req.pFag || null;
   } else {
     const LEVEL_RANK = { gps: 0, lot: 1, adjacent: 2, block: 3, section: 4 };
@@ -707,23 +768,27 @@ CS.familyHints = function (model, req, limit) {
   const out = [];
   for (const m of model.memorials) {
     if (m.mid === req.mid) continue;
-    const match = CS.normName(m.last) === lastN || CS.normName(m.maiden) === lastN ||
-      CS.soundex(m.last) === lastS;
-    if (!match) continue;
+    const exactLast = m.nl === lastN || (m.nm && m.nm === lastN);
+    if (!exactLast && m.sx !== lastS) continue;
+    const yearGap = (req.dy && m.dy) ? Math.abs(req.dy - m.dy) : (req.by && m.by) ? Math.abs(req.by - m.by) : 60;
+    // quality gates: sound-alike surnames only count with tight year proximity;
+    // distant generations are rarely useful leads
+    if (!exactLast && yearGap > 5) continue;
+    if (yearGap > 40) continue;
     let loc = null;
     if (m.lat != null) loc = { lat: m.lat, lng: m.lng, acc: 6, level: 'gps' };
     else if (m.p) loc = CS.locate(model, m.p);
-    const yearGap = (req.dy && m.dy) ? Math.abs(req.dy - m.dy) : (req.by && m.by) ? Math.abs(req.by - m.by) : 60;
+    // a lead you can neither walk to nor look at teaches nothing in the field
+    if (!loc && !m.hasGravePhoto) continue;
     out.push({
       name: m.name, years: yearsOf(m), mid: m.mid, hasPhoto: m.hasGravePhoto,
-      plot: m.plot || '', loc, yearGap,
-      exactLast: CS.normName(m.last) === lastN || CS.normName(m.maiden) === lastN,
+      plot: m.plot || '', loc, yearGap, exactLast,
     });
   }
   out.sort((a, b) =>
     (b.exactLast ? 1 : 0) - (a.exactLast ? 1 : 0) ||
-    ((b.loc ? 1 : 0) - (a.loc ? 1 : 0)) ||
-    a.yearGap - b.yearGap);
+    a.yearGap - b.yearGap ||
+    ((b.loc ? 1 : 0) - (a.loc ? 1 : 0)));
   return out.slice(0, limit || 8);
 };
 
@@ -733,51 +798,64 @@ CS.search = function (model, q, limit) {
   if (!q || q.length < 2) return [];
   const terms = q.split(' ').filter(Boolean);
   const out = [];
-  const test = (name, maiden) => {
-    const n = CS.normName(name) + ' ' + CS.normName(maiden || '');
-    return terms.every(t => n.includes(t));
-  };
+  const test = sk => terms.every(t => sk.includes(t));
   for (const m of model.memorials) {
-    if (test(m.name, m.maiden)) { out.push({ kind: 'mem', item: m }); if (out.length >= (limit || 60)) return out; }
+    if (test(m.sk)) { out.push({ kind: 'mem', item: m }); if (out.length >= (limit || 60)) return out; }
   }
   for (const r of model.roster) {
     if (r.mem) continue; // shown via memorial
-    if (test(r.name, r.formerName)) { out.push({ kind: 'ros', item: r }); if (out.length >= (limit || 60)) return out; }
+    if (test(r.sk)) { out.push({ kind: 'ros', item: r }); if (out.length >= (limit || 60)) return out; }
   }
   return out;
 };
-// search across many cemetery models; results carry their model
-CS.searchAll = function (models, q, limit) {
+// search across many cemetery models with a PER-CEMETERY cap so one big cemetery
+// can't crowd out all the others; results carry their model
+CS.searchAll = function (models, q, opts) {
+  const perCem = (opts && opts.perCem) || 6;
+  const total = (opts && opts.total) || (typeof opts === 'number' ? opts : 120);
   const out = [];
+  let truncated = false;
   for (const model of models) {
-    for (const hit of CS.search(model, q, limit)) {
+    const hits = CS.search(model, q, perCem + 1);
+    if (hits.length > perCem) truncated = true;
+    for (const hit of hits.slice(0, perCem)) {
       hit.model = model;
       out.push(hit);
-      if (out.length >= (limit || 60)) return out;
     }
+    if (out.length >= total) { truncated = true; break; }
   }
+  out.truncated = truncated;
   return out;
 };
 
 /* ---------------- imports ---------------- */
 // Photo-request JSON from the bookmarklet (raw FAG ajax payload or already-array)
-CS.parseRequestsJson = function (text) {
+CS.parseRequestsJson = function (text, cem) {
   let data;
   try { data = JSON.parse(text); } catch (e) { return { error: 'Not valid JSON: ' + e.message }; }
   const arr = Array.isArray(data) ? data : (data.photoRequests || data.requests || null);
   if (!arr || !Array.isArray(arr)) return { error: 'JSON does not contain a photoRequests array.' };
-  const requests = arr.map(r => ({
-    prId: r.photoRequestId || r.prId || null,
-    mid: +(r.memorialId || r.mid) || null,
-    fn: r.firstName || r.fn || '', ln: r.lastName || r.ln || '',
-    name: r.memorialName || r.name || ((r.firstName || '') + ' ' + (r.lastName || '')).trim(),
-    by: r.birthYear || r.by || null, dy: r.deathYear || r.dy || null,
-    bd: r.birthDate || r.bd || '', dd: r.deathDate || r.dd || '',
-    plot: r.longPlot || r.plot || '', notes: r.notes || '',
-    req: r.reqPublicName || r.req || '', created: r.dateCreated || r.created || '',
-    lat: (r.latLonMethod === 'memorial' && r.latitude) ? +r.latitude : (r.lat != null ? r.lat : null),
-    lng: (r.latLonMethod === 'memorial' && r.longitude) ? +r.longitude : (r.lng != null ? r.lng : null),
-  })).filter(r => r.mid);
+  const requests = arr.map(r => {
+    let lat = (r.latLonMethod === 'memorial' && r.latitude) ? +r.latitude : (r.lat != null ? r.lat : null);
+    let lng = (r.latLonMethod === 'memorial' && r.longitude) ? +r.longitude : (r.lng != null ? r.lng : null);
+    // junk-pin filter: default pins sit exactly on the cemetery centroid
+    if (lat != null && cem && cem.lat != null) {
+      const d = CS.distM(lat, lng, cem.lat, cem.lng);
+      if (!isFinite(d) || d < 5 || d > 800) { lat = null; lng = null; }
+    }
+    return {
+      prId: r.photoRequestId || r.prId || null,
+      mid: +(r.memorialId || r.mid) || null,
+      cid: +(r.cemeteryId || r.cid) || null,
+      fn: r.firstName || r.fn || '', ln: r.lastName || r.ln || '',
+      name: r.memorialName || r.name || ((r.firstName || '') + ' ' + (r.lastName || '')).trim(),
+      by: r.birthYear || r.by || null, dy: r.deathYear || r.dy || null,
+      bd: r.birthDate || r.bd || '', dd: r.deathDate || r.dd || '',
+      plot: r.longPlot || r.plot || '', notes: r.notes || '',
+      req: r.reqPublicName || r.req || '', created: r.dateCreated || r.created || '',
+      lat, lng,
+    };
+  }).filter(r => r.mid);
   return { requests };
 };
 // Official Download List file (rows from SheetJS: array of arrays or objects)

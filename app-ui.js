@@ -153,8 +153,9 @@ const geo = {
       e => {
         this.err = e;
         gpsChip();
-        if (location.protocol === 'file:') toast('GPS needs HTTPS — use the hosted address or installed app.');
-        else if (e.code === 1) toast('GPS permission denied. Allow location for this site.');
+        if (location.protocol === 'file:' || (typeof isSecureContext !== 'undefined' && !isSecureContext)) {
+          toast('GPS needs HTTPS — open the https:// address and accept the certificate warning once.');
+        } else if (e.code === 1) toast('GPS permission denied. Allow location for this site.');
       },
       { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 }
     );
@@ -259,6 +260,7 @@ function switchTab(name) {
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + name));
   if (name === 'walk') renderWalk();
   if (name === 'map') { ensureMap(); mainMap.resize(); refreshMapLayers(); fitMap(); }
+  if (name === 'search') ensureAllModels(); // pay the build cost on tab open, not first keystroke
   if (name === 'data') renderDataInfo();
 }
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
@@ -270,15 +272,18 @@ function requestRowsFor(c) {
   return (u && Array.isArray(u.requests)) ? u.requests : c.data.requests;
 }
 function updateStats() {
-  let open = 0, done = 0;
+  let open = 0, done = 0, hereOpen = 0;
+  const activeIds = new Set(activeCemList());
   for (const c of DS.cemeteries) {
+    const here = activeIds.has(String(c.id));
     for (const r of requestRowsFor(c)) {
       const st = progressOf(r.mid).st;
       if (st === 'done' || st === 'nostone' || st === 'notfound') done++;
-      else open++;
+      else { open++; if (here) hereOpen++; }
     }
   }
-  $('stat-open').textContent = open;
+  // scoped count when a single cemetery is selected — the header must match the list
+  $('stat-open').textContent = activeCem() === 'all' ? open : `${hereOpen} here · ${open}`;
   $('stat-done').textContent = done;
 }
 
@@ -289,21 +294,35 @@ const OAKGROVE_SECTION_ORDER = ['Vault Hill', 'Round Hill', 'Old Part', 'Square 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 const normFilter = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
+// one vocabulary for confidence levels, everywhere in the app
+const LEVEL_LABEL = { gps: 'GPS pin', lot: 'lot position', adjacent: 'near lot', block: 'block area', section: 'section area' };
+function levelLabel(l) { return LEVEL_LABEL[l] || l; }
+function fmtDist(m) { return m >= 950 ? (m / 1000).toFixed(1) + ' km' : Math.round(m) + ' m'; }
+
 function locChip(req, model) {
   if (!req.loc) {
     const interments = model && model.cem && model.cem.data.meta ? (model.cem.data.memorials.length || 0) : 0;
     const small = interments > 0 && interments <= 400;
-    return `<span class="loc-chip"><span class="dot q-none"></span>${small ? 'no plot — small cemetery, walkable in full' : 'no location — tap Neighbors for family leads'}</span>`;
+    const hasPlotText = req.plot && !/no location|unknown/i.test(req.plot);
+    const msg = hasPlotText ? 'plot recorded — not mappable yet, tap Neighbors'
+      : small ? 'no plot — small cemetery, walkable in full'
+      : 'no plot on record — tap Neighbors for family leads';
+    return `<span class="loc-chip"><span class="dot q-none"></span>${msg}</span>`;
   }
   const l = req.loc;
   const q = l.level === 'gps' || l.level === 'lot' ? 'q-lot' : (l.level === 'adjacent' || l.level === 'block') ? 'q-block' : 'q-section';
-  const lbl = { gps: 'GPS pin', lot: 'lot position', adjacent: 'near lot', block: 'block area', section: 'section only' }[l.level] || l.level;
-  return `<span class="loc-chip"><span class="dot ${q}"></span>${lbl} ±${Math.round(l.acc)} m</span>`;
+  const pins = l.pins ? ` · ${l.pins} pin${l.pins > 1 ? 's' : ''}` : '';
+  const disputed = l.disputed ? ' · pins disagree — check both spots' : '';
+  return `<span class="loc-chip"><span class="dot ${q}"></span>${levelLabel(l.level)} ±${Math.round(l.acc)} m${pins}${disputed}</span>`;
 }
 function plotLine(req) {
   const bits = [];
   if (req.plot && !/no location/i.test(req.plot)) bits.push(esc(req.plot));
-  if (req.pRos && (!req.pFag || req.plotConflict)) {
+  // show the register plot when Find a Grave has none, they disagree, OR the
+  // register adds precision (a lot/grave number the FAG string lacks)
+  const rosAdds = req.pRos && req.pFag &&
+    ((req.pRos.lot && !req.pFag.lot) || (req.pRos.grave && !req.pFag.grave));
+  if (req.pRos && (!req.pFag || req.plotConflict || rosAdds)) {
     const r = req.pRos;
     const secTxt = r.section === '*' ? '' : r.section + (r.sub ? ' Sub ' + r.sub : '');
     bits.push('<span class="badge sky" title="from city burial register">register</span> ' +
@@ -357,9 +376,9 @@ function filteredRequests(model, filter, hideDone) {
 function sectionGroupsFor(model, items) {
   const groups = new Map();
   for (const r of items) {
-    let key = 'Location unknown';
+    let key = 'No plot on record';
     if (r.pBest && r.pBest.section) {
-      key = r.pBest.section === '*' ? 'All plots'
+      key = r.pBest.section === '*' ? 'Rows & lots (no section names here)'
         : (r.pBest.section + (r.pBest.section === 'Old Part' && r.pBest.sub ? ' — Sub ' + r.pBest.sub : ''));
     }
     if (!groups.has(key)) groups.set(key, []);
@@ -368,8 +387,80 @@ function sectionGroupsFor(model, items) {
   return groups;
 }
 
+/* nearest-cemetery banner: miles in the selector are from HOME; when GPS is on,
+   tell the user which cemetery they're actually standing at */
+let lastNearestCheck = 0;
+function updateNearestBanner() {
+  const el = $('nearest-banner');
+  if (!geo.pos) { el.style.display = 'none'; return; }
+  let best = null, bestD = Infinity;
+  for (const c of DS.cemeteries) {
+    const d = CS.distM(geo.pos.lat, geo.pos.lng, c.data.meta.cem.lat, c.data.meta.cem.lng);
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  if (!best || bestD > 1200 || activeCem() === String(best.id)) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.innerHTML = `📍 You're at <strong>${esc(best.name)}</strong> (${fmtDist(bestD)}) — <a href="#" id="nearest-switch">switch to it</a>`;
+  $('nearest-switch').onclick = ev => {
+    ev.preventDefault();
+    store.prefs.activeCem = String(best.id);
+    save();
+    renderCemSelect();
+    renderWalk();
+  };
+}
+
 let walkRenderToken = 0;
+let walkMode = 'open'; // 'open' | 'finished'
+const expandedCems = new Set(); // cemeteries expanded in 'All nearby' view
+
+function renderFinished() {
+  const wrap = $('walk-list');
+  wrap.innerHTML = '';
+  const rows = [];
+  for (const c of DS.cemeteries) {
+    const model = getModel(c.id);
+    if (!model) continue;
+    for (const r of model.requests) {
+      const p = progressOf(r.mid);
+      if (['done', 'nostone', 'notfound'].includes(p.st || '')) rows.push({ r, model, p });
+    }
+  }
+  rows.sort((a, b) => (b.p.ts || 0) - (a.p.ts || 0));
+  if (!rows.length) {
+    wrap.innerHTML = '<div class="empty-state"><div class="ornament">❧</div>Nothing finished yet — outcomes you mark will collect here for fulfilling on Find a Grave.</div>';
+    return;
+  }
+  const stLabel = { done: '✓ Photographed', nostone: 'No stone found', notfound: 'Not found' };
+  for (const { r, model, p } of rows) {
+    const card = document.createElement('div');
+    card.className = 'tcard st-' + p.st;
+    card.innerHTML = `
+      <div class="tname">${esc(r.name)}<span class="years">${CS.yearsOf(r)}</span></div>
+      <div class="tmeta"><span class="lbl">${esc(model.cem.name)}</span> ${stLabel[p.st]}${p.ts ? ' · ' + new Date(p.ts).toLocaleDateString() : ''}</div>
+      ${p.note ? `<div class="reqnote">${esc(p.note)}</div>` : ''}
+      ${p.gps ? `<div class="tmeta">📍 ${p.gps.lat}, ${p.gps.lng} (±${p.gps.acc} m) <button class="mini act-copy">Copy GPS</button></div>` : ''}
+      <div class="trow-actions">
+        <a class="mini" style="text-decoration:none;" href="https://www.findagrave.com/memorial/${r.mid}" target="_blank" rel="noopener">Open on Find a Grave ↗</a>
+        <button class="mini act-reopen">↩ Reopen</button>
+      </div>`;
+    const cp = card.querySelector('.act-copy');
+    if (cp) cp.addEventListener('click', () => {
+      navigator.clipboard && navigator.clipboard.writeText(p.gps.lat + ', ' + p.gps.lng)
+        .then(() => toast('GPS copied — paste into the memorial\'s location on Find a Grave'), () => toast('Copy failed'));
+    });
+    card.querySelector('.act-reopen').addEventListener('click', () => {
+      setProgress(String(r.mid), { st: '' });
+      renderWalk();
+      toast(r.name + ' reopened');
+    });
+    wrap.appendChild(card);
+  }
+}
+
 function renderWalk() {
+  updateNearestBanner();
+  if (walkMode === 'finished') { renderFinished(); updateStats(); return; }
   const wrap = $('walk-list');
   const filter = normFilter($('walk-filter').value);
   const sort = $('walk-sort').value;
@@ -386,7 +477,10 @@ function renderWalk() {
     if (token !== walkRenderToken) return; // superseded render
     if (idx >= cems.length) {
       if (!any) {
-        wrap.innerHTML = `<div class="empty-state"><div class="ornament">❧</div>${DS.cemeteries.length ? 'Nothing matches — or all caught up.' : 'No dataset loaded. See the Data tab.'}</div>`;
+        const msg = !DS.cemeteries.length ? 'No dataset loaded. See the Data tab.'
+          : filter ? `Nothing matches “${esc($('walk-filter').value.trim())}”.`
+          : 'All caught up here ✓ — uncheck “hide finished” to review your work.';
+        wrap.innerHTML = `<div class="empty-state"><div class="ornament">❧</div>${msg}</div>`;
       }
       updateStats();
       return;
@@ -398,16 +492,32 @@ function renderWalk() {
       if (items.length) {
         any = true;
         if (activeCem() === 'all') {
-          const openCount = filteredRequests(model, '', true).length;
+          const cid = String(cem.id);
+          const expanded = expandedCems.has(cid) || !!filter; // searching expands everything
           const cc = model.meta.cem;
           const head = document.createElement('div');
           head.className = 'section-header';
           head.style.background = 'var(--ink)';
+          head.style.cursor = 'pointer';
           head.innerHTML = `<h2>${esc(cem.name)}</h2>
             <a href="https://maps.google.com/?daddr=${cc.lat},${cc.lng}" target="_blank" rel="noopener" title="Drive there" style="color:var(--bg-deep); text-decoration:none; font-size:0.95rem;">🚗</a>
-            <span class="meta">${cem.miles != null ? cem.miles + ' mi · ' : ''}${openCount} open</span>`;
+            <span class="meta">${cem.miles != null ? cem.miles + ' mi · ' : ''}${items.length} open ${expanded ? '▾' : '▸'}</span>`;
+          head.addEventListener('click', ev => {
+            if (ev.target.tagName === 'A') return; // let the drive link work
+            expandedCems.has(cid) ? expandedCems.delete(cid) : expandedCems.add(cid);
+            renderWalk();
+          });
           wrap.appendChild(head);
-          for (const r of items) wrap.appendChild(requestCard(r, model));
+          const shown = expanded ? items : items.slice(0, 4);
+          for (const r of shown) wrap.appendChild(requestCard(r, model));
+          if (!expanded && items.length > shown.length) {
+            const more = document.createElement('button');
+            more.className = 'mini';
+            more.style.cssText = 'width:100%; padding:11px; border-top:none;';
+            more.textContent = `Show all ${items.length} at ${cem.name} ▾`;
+            more.addEventListener('click', () => { expandedCems.add(cid); renderWalk(); });
+            wrap.appendChild(more);
+          }
         } else if (sort === 'route') {
           for (const [name, list] of sectionGroupsFor(model, items)) {
             const div = document.createElement('div');
@@ -432,15 +542,17 @@ function requestCard(req, model) {
   const st = progressOf(req.mid).st || '';
   card.className = 'tcard' + (st ? ' st-' + st : '');
   const yrs = CS.yearsOf(req);
-  const distTxt = (geo.pos && req.loc) ? Math.round(CS.distM(geo.pos.lat, geo.pos.lng, req.loc.lat, req.loc.lng)) + ' m away' : '';
-  const note = progressOf(req.mid).note;
+  const distTxt = (geo.pos && req.loc) ? fmtDist(CS.distM(geo.pos.lat, geo.pos.lng, req.loc.lat, req.loc.lng)) + ' away' : '';
+  const prog = progressOf(req.mid);
   card.innerHTML = `
     <div class="tname">${esc(req.name)}${yrs ? `<span class="years">${yrs}</span>` : ''}
       ${req.mem && req.mem.veteran ? '<span class="badge stone" title="veteran">vet</span>' : ''}
       ${req.plotConflict ? '<span class="badge rust" title="Find a Grave and city register disagree — verify">verify plot</span>' : ''}
+      ${req.rosVerify ? '<span class="badge outline" title="register row matched by name/date similarity — double-check it is the same person">register match — verify</span>' : ''}
     </div>
     <div class="tmeta">${plotLine(req) || '<span class="lbl">plot</span>—'}</div>
-    <div>${locChip(req, model)}${distTxt ? ` <span class="mono small">· ${distTxt}</span>` : ''}${note ? ' <span title="has field note">📝</span>' : ''}</div>
+    <div>${locChip(req, model)}${distTxt ? ` <span class="mono small">· ${distTxt}</span>` : ''}${prog.note ? ' <span title="has field note">📝</span>' : ''}</div>
+    ${prog.gps ? `<div class="tmeta">📍 saved ${prog.gps.lat}, ${prog.gps.lng} (±${prog.gps.acc} m)</div>` : ''}
     ${req.notes ? `<div class="reqnote">“${esc(String(req.notes).replace(/<br\s*\/?>/gi, ' '))}” <span class="small">— requester${req.req ? ', ' + esc(req.req) : ''}</span></div>` : ''}
     <div class="trow-actions">
       <button class="mini act-guide">➤ Guide</button>
@@ -454,13 +566,26 @@ function requestCard(req, model) {
   card.querySelector('.act-guide').addEventListener('click', () => openGuide(req, model));
   card.querySelector('.act-nb').addEventListener('click', () => {
     const nb = card.querySelector('.neighbors');
-    if (!nb.dataset.loaded) { nb.innerHTML = neighborsHtml(req, model); nb.dataset.loaded = '1'; }
+    if (!nb.dataset.loaded) { nb.innerHTML = neighborsHtml(req, model); nb.dataset.loaded = '1'; wireLeadButtons(nb, model); }
     nb.classList.toggle('open');
   });
+  // state changes update THIS card in place — never a full re-render that would
+  // lose the user's scroll position mid-cemetery
+  const ST_LABEL = { done: 'Photographed ✓', nostone: 'No stone found', notfound: 'Not found' };
   const setSt = v => () => {
     const cur = progressOf(req.mid).st;
-    setProgress(req.mid, { st: cur === v ? '' : v });
-    renderWalk();
+    const next = cur === v ? '' : v;
+    setProgress(req.mid, { st: next });
+    card.className = 'tcard' + (next ? ' st-' + next : '');
+    for (const [k, cls] of [['done', '.act-done'], ['nostone', '.act-nostone'], ['notfound', '.act-notfound']]) {
+      card.querySelector(cls).classList.toggle('on', next === k);
+    }
+    toast(next ? `${req.name}: ${ST_LABEL[next]} — tap again to undo` : `${req.name}: reopened`);
+    if (next && $('walk-hidedone').checked) {
+      card.style.transition = 'opacity 0.6s';
+      card.style.opacity = '0.25';
+      setTimeout(() => { if (progressOf(req.mid).st === next) card.remove(); }, 1500);
+    }
   };
   card.querySelector('.act-done').addEventListener('click', setSt('done'));
   card.querySelector('.act-nostone').addEventListener('click', setSt('nostone'));
@@ -468,15 +593,33 @@ function requestCard(req, model) {
   return card;
 }
 
+// family leads / neighbors with a location get their own ➤ button
+function wireLeadButtons(container, model) {
+  for (const btn of container.querySelectorAll('.act-lead')) {
+    btn.addEventListener('click', () => {
+      const d = btn.dataset;
+      openGuide({
+        name: d.name, mid: +d.mid || null, ln: d.ln || '',
+        loc: { lat: +d.lat, lng: +d.lng, acc: +d.acc, level: d.level },
+        pBest: null, plot: d.plot || '',
+      }, model);
+    });
+  }
+}
+
 function familyHtml(req, model) {
   const fam = CS.familyHints(model, req, 8);
-  if (!fam.length) return '<div class="small">No plot info and no same-surname burials found here. Try Search across all cemeteries.</div>';
+  if (!fam.length) return '<div class="small">No plot info and no promising same-surname burials here. Try Search across all cemeteries.</div>';
   let html = '<h4>No plot on record — family leads (spouses usually share the lot):</h4>';
   for (const f of fam) {
+    const lead = f.loc
+      ? `<button class="mini act-lead" data-name="${esc(f.name)}" data-mid="${f.mid}" data-lat="${f.loc.lat}" data-lng="${f.loc.lng}" data-acc="${Math.round(f.loc.acc)}" data-level="${f.loc.level}" data-plot="${esc(f.plot)}">➤ Guide</button>`
+      : '';
     html += `<div class="nb">
       ${f.hasPhoto ? '<span class="cam">📷</span>' : '<span class="cam" style="opacity:0.25;">·</span>'}
       <a href="https://www.findagrave.com/memorial/${f.mid}" target="_blank" rel="noopener">${esc(f.name)}</a>
-      <span class="g">${esc(f.years)}${f.plot ? ' · ' + esc(f.plot) : ''}${f.loc ? ' · locatable ±' + Math.round(f.loc.acc) + 'm' : ''}</span>
+      <span class="g">${esc(f.years)}${f.plot ? ' · ' + esc(f.plot) : ''}${f.loc ? ' · ' + levelLabel(f.loc.level) + ' ±' + Math.round(f.loc.acc) + ' m' : ''}</span>
+      ${lead}
     </div>`;
   }
   return html;
@@ -486,13 +629,22 @@ function neighborsHtml(req, model) {
   if (!p || !p.section) return familyHtml(req, model);
   const nbs = CS.neighbors(model, p, req.mid);
   if (!nbs.length) return familyHtml(req, model);
-  const withPhoto = nbs.filter(n => n.hasPhoto).length;
-  let html = `<h4>Buried nearby — ${withPhoto} with photographed stones (📷 = visual anchor)</h4>`;
-  for (const n of nbs.slice(0, 14)) {
+  // keep the shown subset honest: nearest first, but photographed anchors always survive the cut
+  const CAP = 14;
+  let shown;
+  if (nbs.length <= CAP) shown = nbs;
+  else {
+    const pick = new Set(nbs.filter(n => n.hasPhoto).slice(0, 5));
+    for (const n of nbs) { if (pick.size >= CAP) break; pick.add(n); }
+    shown = nbs.filter(n => pick.has(n));
+  }
+  const photoShown = shown.filter(n => n.hasPhoto).length;
+  let html = `<h4>Buried nearby — showing ${shown.length} of ${nbs.length}, ${photoShown} with photographed stones (📷 = visual anchor)</h4>`;
+  for (const n of shown) {
     html += `<div class="nb">
       ${n.hasPhoto ? '<span class="cam">📷</span>' : '<span class="cam" style="opacity:0.25;">·</span>'}
       ${n.mid ? `<a href="https://www.findagrave.com/memorial/${n.mid}" target="_blank" rel="noopener">${esc(n.name)}</a>` : esc(n.name)}
-      <span class="g">${esc(n.years)} · ${esc(n.rel || 'nearby')}${n.grave ? ' · gr ' + esc(n.grave) : ''}${n.fromRegister ? ' · register' : ''}</span>
+      <span class="g">${esc(n.years)} · ${esc(n.rel || 'nearby')}${n.grave ? ' · grave ' + esc(n.grave) : ''}${n.fromRegister ? ' · register' : ''}</span>
     </div>`;
   }
   return html;
@@ -515,13 +667,21 @@ function openGuide(target, model) {
   const plotBits = [];
   if (model && model.cem) plotBits.push(model.cem.name);
   if (target.plot && !/no location/i.test(target.plot)) plotBits.push(target.plot);
-  if (target.pRos) plotBits.push('Register: ' + [target.pRos.section === '*' ? '' : target.pRos.section + (target.pRos.sub ? ' Sub ' + target.pRos.sub : ''), target.pRos.block && 'Blk ' + target.pRos.block, target.pRos.lot && 'Lot ' + target.pRos.lot, target.pRos.grave && 'Gr ' + target.pRos.grave].filter(Boolean).join(' '));
-  if (target.loc) plotBits.push('±' + Math.round(target.loc.acc) + ' m (' + target.loc.level + ')');
+  if (target.pRos) {
+    const regTxt = [target.pRos.section === '*' ? '' : target.pRos.section + (target.pRos.sub ? ' Sub ' + target.pRos.sub : ''), target.pRos.block && 'Blk ' + target.pRos.block, target.pRos.lot && 'Lot ' + target.pRos.lot, target.pRos.grave && 'Gr ' + target.pRos.grave].filter(Boolean).join(' ');
+    // don't repeat an identical plot twice when both sources agree
+    if (regTxt && !plotBits.some(b => normFilter(b) === normFilter(regTxt))) plotBits.push('Register: ' + regTxt);
+  }
+  if (target.loc) plotBits.push('±' + Math.round(target.loc.acc) + ' m (' + levelLabel(target.loc.level) + ')');
+  const savedGps = target.pk && progressOf(target.pk).gps;
+  if (savedGps) plotBits.push('📍 saved ' + savedGps.lat + ', ' + savedGps.lng);
   $('guide-plot').textContent = plotBits.join('  ·  ') || 'no location information';
   $('guide-fag').href = target.mid ? 'https://www.findagrave.com/memorial/' + target.mid : '#';
   $('guide-fag').style.display = target.mid ? '' : 'none';
   $('guide-note').value = (target.pk && progressOf(target.pk).note) || '';
-  $('guide-neighbors').innerHTML = (target.pBest && model) ? neighborsHtml(target, model) : '';
+  // always show something useful below: neighbors when there's a plot, family leads otherwise
+  $('guide-neighbors').innerHTML = model ? neighborsHtml(target, model) : '';
+  if (model) wireLeadButtons($('guide-neighbors'), model);
   syncGuideButtons();
 
   $('guide').classList.add('open');
@@ -555,28 +715,30 @@ $('guide-close').addEventListener('click', closeGuide);
 
 function syncGuideButtons() {
   const st = guideTarget && guideTarget.pk ? (progressOf(guideTarget.pk).st || '') : '';
-  $('guide-done').textContent = st === 'done' ? '✓ Photographed ✔' : '✓ Photographed';
-  $('guide-nostone').textContent = st === 'nostone' ? 'No stone ✔' : 'No stone found';
+  $('guide-done').textContent = st === 'done' ? '✔ Photographed' : '✓ Photographed';
+  $('guide-nostone').textContent = st === 'nostone' ? '✔ No stone' : 'No stone found';
+  $('guide-notfound').textContent = st === 'notfound' ? '✔ Not found' : 'Not found';
 }
-$('guide-done').addEventListener('click', () => {
+function guideSetState(v, extraTip) {
   if (!guideTarget || !guideTarget.pk) return;
   const cur = progressOf(guideTarget.pk).st;
-  setProgress(guideTarget.pk, { st: cur === 'done' ? '' : 'done' });
+  const next = cur === v ? '' : v;
+  setProgress(guideTarget.pk, { st: next });
   syncGuideButtons();
-  toast(progressOf(guideTarget.pk).st === 'done' ? 'Marked photographed ✓' : 'Unmarked');
-});
-$('guide-nostone').addEventListener('click', () => {
-  if (!guideTarget || !guideTarget.pk) return;
-  const cur = progressOf(guideTarget.pk).st;
-  setProgress(guideTarget.pk, { st: cur === 'nostone' ? '' : 'nostone' });
-  syncGuideButtons();
-  toast('Tip: photograph the spot in context and flag the request on Find a Grave.', 3600);
-});
+  const label = { done: 'Photographed ✓', nostone: 'No stone found', notfound: 'Not found' }[v];
+  if (!next) toast('Reopened');
+  else toast('Marked: ' + label + (extraTip ? ' — ' + extraTip : ''), extraTip ? 4200 : 2600);
+}
+$('guide-done').addEventListener('click', () => guideSetState('done'));
+$('guide-nostone').addEventListener('click', () => guideSetState('nostone', 'photograph the spot in context and flag the request on Find a Grave'));
+$('guide-notfound').addEventListener('click', () => guideSetState('notfound'));
 $('guide-savegps').addEventListener('click', () => {
   if (!geo.pos) { toast('No GPS fix yet'); return; }
   if (!guideTarget || !guideTarget.pk) return;
-  setProgress(guideTarget.pk, { gps: { lat: +geo.pos.lat.toFixed(6), lng: +geo.pos.lng.toFixed(6), acc: Math.round(geo.pos.acc) } });
-  toast(`Saved ${geo.pos.lat.toFixed(6)}, ${geo.pos.lng.toFixed(6)} (±${Math.round(geo.pos.acc)} m) — add it to the memorial when fulfilling`, 4200);
+  const gps = { lat: +geo.pos.lat.toFixed(6), lng: +geo.pos.lng.toFixed(6), acc: Math.round(geo.pos.acc) };
+  setProgress(guideTarget.pk, { gps });
+  if (navigator.clipboard) navigator.clipboard.writeText(gps.lat + ', ' + gps.lng).catch(() => {});
+  toast(`Saved & copied ${gps.lat}, ${gps.lng} (±${gps.acc} m) — it's also on the card and the Finished list`, 4200);
 });
 $('guide-note').addEventListener('input', () => {
   if (guideTarget && guideTarget.pk) setProgress(guideTarget.pk, { note: $('guide-note').value });
@@ -586,7 +748,6 @@ function drawArrow() {
   const cv = $('arrow-canvas');
   const ctx = cv.getContext('2d');
   const W = cv.width, H = cv.height, cx = W / 2, cy = H / 2;
-  ctx.clearRect(0, 0, W, H);
 
   const t = guideTarget;
   let distTxt = '—', sub = '';
@@ -600,15 +761,24 @@ function drawArrow() {
     else sub = `bearing ${Math.round(bearing)}° ${compassPoint(bearing)} · face north & follow · GPS ±${Math.round(geo.pos.acc)} m`;
     if (d <= Math.max(8, t.loc.acc)) sub = `you're within the search circle (±${Math.round(t.loc.acc)} m) — read the stones · ` + sub;
   } else if (!geo.pos) {
-    sub = geo.watchId == null ? 'tap the GPS chip (top right) to start' : 'waiting for GPS fix…';
+    if (geo.err && geo.err.code === 1) sub = 'location permission denied — allow it for this site in your browser settings';
+    else if (typeof isSecureContext !== 'undefined' && !isSecureContext) sub = 'GPS needs the https:// address — open it and accept the certificate warning once';
+    else sub = 'waiting for GPS fix… (clear sky helps)';
   } else if (t && !t.loc) {
-    sub = 'no predicted location — use the neighbors list';
+    sub = 'no predicted location — see the leads below the map';
   }
   if (distTxt !== lastGuideDom.dist) { $('guide-dist').innerHTML = distTxt; lastGuideDom.dist = distTxt; }
   if (sub !== lastGuideDom.sub) { $('guide-sub').textContent = sub; lastGuideDom.sub = sub; }
 
   const head = compass.best();
   const rot = bearing == null ? null : ((bearing - (head ? head.h : 0)) * Math.PI / 180);
+
+  // skip the canvas repaint when nothing moved — the RAF loop otherwise burns
+  // battery redrawing an identical arrow during long wake-locked sessions
+  const frameKey = (rot == null ? 'x' : rot.toFixed(2)) + '|' + (head ? head.h.toFixed(1) : '') + '|' + distTxt + '|' + sub;
+  if (frameKey === lastGuideDom.frameKey) { updateGuideMinimap(); return; }
+  lastGuideDom.frameKey = frameKey;
+  ctx.clearRect(0, 0, W, H);
 
   ctx.save();
   ctx.translate(cx, cy);
@@ -643,6 +813,9 @@ function drawArrow() {
   }
   ctx.restore();
 
+  updateGuideMinimap();
+}
+function updateGuideMinimap() {
   if (guideMap && geo.pos && (geo.pos.lat !== lastMiniDraw.lat || geo.pos.lng !== lastMiniDraw.lng)) {
     lastMiniDraw = { lat: geo.pos.lat, lng: geo.pos.lng };
     guideMap.user = geo.pos;
@@ -725,7 +898,7 @@ function ensureMap() {
   });
   $('map-zoom-in').addEventListener('click', () => mainMap.zoomAt(mainMap.w / 2, mainMap.h / 2, 1.35));
   $('map-zoom-out').addEventListener('click', () => mainMap.zoomAt(mainMap.w / 2, mainMap.h / 2, 0.74));
-  $('map-fit').addEventListener('click', fitMap);
+  $('map-fit').addEventListener('click', () => fitMap(true));
   $('map-imagery').classList.toggle('on', imageryPref());
   $('map-imagery').addEventListener('click', () => {
     store.prefs.imagery = !imageryPref();
@@ -752,19 +925,40 @@ function refreshMapLayers() {
   mainMap.user = geo.pos;
   mainMap.draw();
 }
-function fitMap() {
+function fitCemetery(model) {
+  const pts = [{ lat: model.meta.cem.lat, lng: model.meta.cem.lng }];
+  const cache = modelLayerCache(model);
+  pts.push(...cache.lots, ...cache.sections);
+  for (const r of model.requests) if (r.loc) pts.push(r.loc);
+  mainMap.fitTo(pts, 150);
+}
+let mapFitState = 'cem'; // toggles: cemetery view <-> whole region
+function fitMap(toggle) {
   if (!mainMap) return;
   const ids = activeCemList();
+  if (toggle === true) mapFitState = mapFitState === 'cem' ? 'region' : 'cem';
   if (ids.length === 1) {
-    const model = getModel(ids[0]);
-    const pts = [{ lat: model.meta.cem.lat, lng: model.meta.cem.lng }];
-    const cache = modelLayerCache(model);
-    pts.push(...cache.lots, ...cache.sections);
-    for (const r of model.requests) if (r.loc) pts.push(r.loc);
-    mainMap.fitTo(pts, 150);
-  } else {
-    mainMap.fitTo(DS.cemeteries.map(c => ({ lat: c.data.meta.cem.lat, lng: c.data.meta.cem.lng })), 800);
+    if (mapFitState === 'region' && toggle === true) {
+      mainMap.fitTo(DS.cemeteries.map(c => ({ lat: c.data.meta.cem.lat, lng: c.data.meta.cem.lng })), 800);
+    } else fitCemetery(getModel(ids[0]));
+    return;
   }
+  // "All nearby": a 28-mile region fit shows nothing useful at cemetery scale —
+  // open on the most relevant single cemetery instead (where you are, or the
+  // nearest one with open requests); ⛶ toggles out to the whole region
+  if (mapFitState === 'region') {
+    mainMap.fitTo(DS.cemeteries.map(c => ({ lat: c.data.meta.cem.lat, lng: c.data.meta.cem.lng })), 800);
+    return;
+  }
+  let best = null, bestD = Infinity;
+  const from = geo.pos || DS.home;
+  for (const c of DS.cemeteries) {
+    if (!requestRowsFor(c).length) continue;
+    const d = CS.distM(from.lat, from.lng, c.data.meta.cem.lat, c.data.meta.cem.lng);
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  if (best) fitCemetery(getModel(best.id));
+  else mainMap.fitTo(DS.cemeteries.map(c => ({ lat: c.data.meta.cem.lat, lng: c.data.meta.cem.lng })), 800);
 }
 
 /* ---------------- search ---------------- */
@@ -777,9 +971,20 @@ function renderSearch() {
   const q = $('search-input').value;
   const wrap = $('search-results');
   if (!q.trim()) { wrap.innerHTML = ''; return; }
-  const res = CS.searchAll(ensureAllModels(), q, 60);
-  if (!res.length) { wrap.innerHTML = '<div class="empty-state">No matches.</div>'; return; }
+  if (normFilter(q).replace(/ /g, '').length < 2) {
+    wrap.innerHTML = '<div class="empty-state">Type at least two letters…</div>';
+    return;
+  }
+  const res = CS.searchAll(ensureAllModels(), q, { perCem: 6, total: 120 });
+  if (!res.length) { wrap.innerHTML = '<div class="empty-state">No matches in any of the ' + DS.cemeteries.length + ' cemeteries.</div>'; return; }
   wrap.innerHTML = '';
+  if (res.truncated) {
+    const note = document.createElement('div');
+    note.className = 'small';
+    note.style.padding = '4px 2px 8px';
+    note.textContent = 'Showing up to 6 matches per cemetery, nearest cemeteries first — add a first name to narrow it down.';
+    wrap.appendChild(note);
+  }
   for (const { kind, item, model } of res) {
     const div = document.createElement('div');
     div.className = 'sres';
@@ -817,7 +1022,7 @@ function renderSearch() {
       save();
       renderCemSelect();
       switchTab('map');
-      mainMap.layers.targets.push({ lat: loc.lat, lng: loc.lng, color: '#2b5c7a', label: item.name.split(' ').pop(), ref: target, model, r: 7 });
+      mainMap.layers.targets.push({ lat: loc.lat, lng: loc.lng, color: '#a07a2c', label: item.name.split(' ').pop(), ref: target, model, r: 7 });
       mainMap.highlight = { lat: loc.lat, lng: loc.lng, acc: loc.acc };
       mainMap.centerOn(loc.lat, loc.lng, Math.max(mainMap.scale, 4));
     });
@@ -968,6 +1173,23 @@ function applyRequests(result, sourceName) {
   if (result.error) { $('fag-status').textContent = '⚠ ' + result.error; return; }
   const cid = dataCemId();
   const cem = cemById.get(String(cid));
+  // bookmarklets fetch whatever cemetery's page they were created for — catch mismatches
+  const srcCid = result.requests.length && result.requests[0].cid;
+  if (srcCid && srcCid !== cid) {
+    const srcCem = cemById.get(String(srcCid));
+    if (srcCem) {
+      if (!confirm(`This data is for ${srcCem.name}, but "${cem ? cem.name : cid}" is selected. Apply it to ${srcCem.name} instead?`)) {
+        $('fag-status').textContent = 'Cancelled — pick the matching cemetery above.';
+        return;
+      }
+      return applyRequestsTo(srcCid, srcCem, result, sourceName);
+    }
+    $('fag-status').textContent = `⚠ This data is for Find a Grave cemetery #${srcCid}, which isn't in your dataset.`;
+    return;
+  }
+  applyRequestsTo(cid, cem, result, sourceName);
+}
+function applyRequestsTo(cid, cem, result, sourceName) {
   const cur = cem ? requestRowsFor(cem).length : 0;
   if (!result.requests.length &&
       !confirm(`The snapshot has ZERO open requests for ${cem ? cem.name : 'this cemetery'} — replace the current ${cur}? (Means everything was fulfilled or removed.)`)) {
@@ -984,10 +1206,14 @@ function applyRequests(result, sourceName) {
     toast(result.requests.length + ' photo requests updated');
   }
 }
+function dataCemCoords() {
+  const cem = cemById.get(String(dataCemId()));
+  return cem ? cem.data.meta.cem : DS.home;
+}
 $('btn-fag-apply').addEventListener('click', () => {
   const text = $('fag-input').value.trim();
   if (!text) { $('fag-status').textContent = 'Paste JSON/CSV first, or drop a file.'; return; }
-  if (text[0] === '[' || text[0] === '{') applyRequests(CS.parseRequestsJson(text), 'pasted JSON');
+  if (text[0] === '[' || text[0] === '{') applyRequests(CS.parseRequestsJson(text, dataCemCoords()), 'pasted JSON');
   else {
     ensureXlsx().then(() => {
       const wb = XLSX.read(text, { type: 'string', raw: false });
@@ -998,7 +1224,7 @@ $('btn-fag-apply').addEventListener('click', () => {
 });
 wireDrop('fag-drop', 'fag-file', file => {
   if (file.name.toLowerCase().endsWith('.json')) {
-    file.text().then(t => applyRequests(CS.parseRequestsJson(t), file.name));
+    file.text().then(t => applyRequests(CS.parseRequestsJson(t, dataCemCoords()), file.name));
   } else {
     readSheetFile(file).then(rows => applyRequests(CS.parseRequestsSheet(rows), file.name))
       .catch(e => { $('fag-status').textContent = '⚠ ' + e.message; });
@@ -1065,7 +1291,7 @@ $('import-file').addEventListener('change', e => {
     if (data.app !== 'cemetery-search' && !data.progress) throw new Error('Not a Cemetery Search backup');
     const inProg = (data.progress && typeof data.progress === 'object' && !Array.isArray(data.progress)) ? data.progress : {};
     const curN = Object.keys(store.progress).length, inN = Object.keys(inProg).length;
-    if (curN && !confirm(`Import backup${data.exported ? ' from ' + String(data.exported).substring(0, 10) : ''}: ${inN} progress entries. Newer entries win; nothing currently saved is deleted. Continue?`)) return;
+    if (curN && !confirm(`Import backup${data.exported ? ' from ' + String(data.exported).substring(0, 10) : ''}: ${inN} progress entries (newest-per-grave wins). Any valid dataset updates in the backup replace the current ones for those cemeteries. Continue?`)) return;
     for (const [k, v] of Object.entries(inProg)) {
       if (!store.progress[k] || (v && v.ts || 0) >= (store.progress[k].ts || 0)) store.progress[k] = v;
     }
@@ -1110,9 +1336,22 @@ $('walk-sort').addEventListener('change', () => {
   renderWalk();
 });
 $('walk-hidedone').addEventListener('change', renderWalk);
+$('walk-finished').addEventListener('click', () => {
+  walkMode = walkMode === 'finished' ? 'open' : 'finished';
+  $('walk-finished').classList.toggle('on', walkMode === 'finished');
+  renderWalk();
+});
 $('gps-chip').addEventListener('click', () => geo.toggle());
-geo.listeners.add(() => {
-  if ($('walk-sort').value === 'near' && $('panel-walk').classList.contains('active')) renderWalk();
+// GPS-driven re-sorting: only when the user actually moved (a re-render per fix
+// would fight the user's scrolling every 1-2 s)
+let lastNearRender = null;
+geo.listeners.add(p => {
+  if (!$('panel-walk').classList.contains('active')) return;
+  updateNearestBanner();
+  if ($('walk-sort').value !== 'near') return;
+  if (lastNearRender && CS.distM(p.lat, p.lng, lastNearRender.lat, lastNearRender.lng) < 15) return;
+  lastNearRender = { lat: p.lat, lng: p.lng };
+  renderWalk();
 });
 
 /* ---------------- service worker ---------------- */
@@ -1126,6 +1365,16 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 $('subtitle').textContent = DS.cemeteries.length > 1
   ? `${DS.cemeteries.length} local cemeteries · ${DS.generated || ''}`
   : ((DS.cemeteries[0] && DS.cemeteries[0].name) || 'No dataset');
+// live counts everywhere copy mentions them — static numbers go stale
+{
+  const totMem = DS.cemeteries.reduce((s, c) => s + c.data.memorials.length, 0);
+  const totRos = DS.cemeteries.reduce((s, c) => s + ((c.data.roster && c.data.roster.length) || 0), 0);
+  if (totMem) {
+    $('search-input').placeholder = `Search any name — ${(Math.floor(totMem / 1000))},000+ burials in ${DS.cemeteries.length} cemeteries, offline`;
+    const el = $('install-count');
+    if (el) el.textContent = `all ${Math.floor((totMem + totRos) / 1000)},000+ records, the maps,`;
+  }
+}
 renderCemSelect();
 renderWalk();
 renderDataInfo();
