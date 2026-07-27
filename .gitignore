@@ -18,3 +18,7 @@ desktop.ini
 # --- Scratch / preview ---
 *.bak
 *.tmp
+
+# --- Python ---
+__pycache__/
+*.pyc
