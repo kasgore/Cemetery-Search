@@ -1,14 +1,14 @@
 /* Cemetery Search — service worker: precache app shell + data for full offline use.
    Strategy: cache-first for instant offline loads, with background revalidation so
    deploys reach users on their next visit without a cache-name bump. */
-const CACHE = 'cemsearch-v2';
+const CACHE = 'cemsearch-v3';
 const ASSETS = [
   './',
   './index.html',
   './app-core.js',
   './app-map.js',
   './app-ui.js',
-  './oakgrove-data.js',
+  './cemetery-data.js',
   './xlsx.full.min.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
@@ -36,6 +36,8 @@ self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET') return;
 
+  // never intercept the server API
+  if (url.pathname.includes('/api/')) return;
   // same-origin: stale-while-revalidate (serve cache instantly, refresh in background)
   if (url.origin === location.origin) {
     e.respondWith(

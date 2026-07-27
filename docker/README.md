@@ -1,25 +1,46 @@
-# Deploying Cemetery Search with Portainer
+# Deploying Cemetery Search with Portainer (Flask + auto-refresh)
 
-Files here:
+One container does everything: serves the app **and refreshes all cemetery data
+automatically** — photo requests every `REFRESH_HOURS` (default 6 h), memorial
+indexes weekly, cemetery discovery daily (any nearby cemetery that gets a new
+photo request is added by itself), BS&A burial registers every ~60 days.
 
-- `cemetery-search-site.tar.gz` — the complete built app (regenerate by re-tarring the repo root files listed in the compose comment)
-- `docker-compose.yml` — the stack (nginx serving the site on port **8420**)
-- `nginx.conf` — mime types, gzip, and cache headers tuned for the PWA
+## Deploy from the repository (easiest)
 
-## Steps
+1. Portainer → **Stacks → Add stack → Repository**
+2. Repository URL: your clone/remote of this repo; Compose path: `docker/docker-compose.yml`
+3. Deploy. First boot serves the baked dataset immediately and then
+   self-refreshes in the background.
 
-1. Copy this `docker/` directory to your Docker host (e.g. `/volume1/docker/cemetery-search/`).
-2. Extract the site into a `site/` subdirectory **next to the compose file**:
-   ```
-   mkdir -p site && tar -xzf cemetery-search-site.tar.gz -C site
-   ```
-3. In Portainer: **Stacks → Add stack → Upload / paste** `docker-compose.yml`, set the stack's working directory to where you copied the files (or use a bind path that matches), and deploy.
-4. Open `http://<host>:8420/` — the app should load with all data baked in.
+Or copy the repo to the host and use **Add stack → Web editor** with the same
+compose file (build context is the repo root).
+
+## Configuration (stack environment variables)
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `REFRESH_HOURS` | `6` | photo-request refresh cadence |
+| `RADIUS_MILES` | `15` | auto-include cemeteries with open requests within this range |
+| `PORT` | `8420` | listen port |
+
+Wider changes (counties scanned, BS&A registers, pinned cemeteries) live in
+`server/refresher.py` `DEFAULT_CONFIG`, or drop a `server/config.json` override
+into the image/bind mount.
+
+## Endpoints
+
+- `http://<host>:8420/` — the app
+- `/api/status` — dataset freshness, counts, last error
+- `POST /api/refresh` — trigger a refresh now
 
 ## ⚠ HTTPS matters for field use
 
-Phone **GPS, compass, and offline install (PWA) only work over HTTPS** — browsers block them on plain `http://`. On the LAN over HTTP the app works as a lookup/search tool, but the Guide arrow and blue-dot map won't.
+Phone **GPS, compass, and offline install (PWA) only work over HTTPS** — put the
+container behind your reverse proxy with a certificate (Synology reverse proxy +
+Let's Encrypt works well) and open the HTTPS hostname on the phone, then
+*Add to Home Screen*. Over plain LAN HTTP the app still works as a
+lookup/search tool, but live navigation is blocked by the browser.
 
-To get the full field experience from your own hosting, put the container behind your reverse proxy with a certificate (Synology's built-in reverse proxy + Let's Encrypt works well), and reach it by that HTTPS hostname from the phone — then use *Add to Home Screen* to install it for offline use at the cemetery.
-
-(The GitHub Pages copy at `https://kasgore.github.io/Cemetery-Search/` already satisfies all of this whenever the repo is pushed.)
+(The GitHub Pages copy at `https://kasgore.github.io/Cemetery-Search/` is
+already HTTPS whenever the repo is pushed, but its data only updates when you
+commit a regenerated `cemetery-data.js` — the Portainer container updates itself.)

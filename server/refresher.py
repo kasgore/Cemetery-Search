@@ -1,0 +1,579 @@
+"""
+Cemetery Search — data refresher.
+
+Discovers local cemeteries with open Find a Grave photo requests, pulls their
+request lists and memorial indexes (plots, GPS anchors, photo flags), optionally
+pulls BS&A municipal burial registers, and writes the app's cemetery-data.js.
+
+Everything is cached under DATA_DIR with per-stage cadences, so runs are cheap:
+requests refresh every run; memorial indexes only when stale; registers rarely.
+"""
+import http.cookiejar
+import json
+import math
+import os
+import random
+import re
+import sys
+import tempfile
+import time
+import urllib.request
+import urllib.error
+from datetime import date
+
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
+SITE_DIR = os.environ.get("SITE_DIR", os.path.join(BASE_DIR, "site"))
+
+DEFAULT_CONFIG = {
+    "home": {"lat": 43.4202995, "lng": -84.6136017},
+    "radius_miles": 15,
+    "counties": {  # Find a Grave county location ids to scan
+        "1255": "Gratiot", "1263": "Isabella", "1285": "Montcalm", "1245": "Clinton",
+        "1299": "Saginaw", "1282": "Midland", "1244": "Clare", "1280": "Mecosta",
+    },
+    "pinned": [1252],          # always included even with zero open requests
+    "declination": -6.6,       # true = magnetic + declination (west is negative)
+    "cadence": {
+        "discovery_hours": 24,
+        "requests_hours": 0,   # every run
+        "memorials_days": 7,
+        "registers_days": 60,
+    },
+    # BS&A municipal burial registers (public, sessionless deep links).
+    # section_map "oakgrove" applies the Oak Grove code table; anything else keeps
+    # numeric sections as "Section N" so they align with the generic plot parser.
+    "registers": [
+        {"cemetery_id": 1252, "uid": 2024, "max_key": 10500, "seed": "seed/roster-1252.json", "section_map": "oakgrove"},
+        {"cemetery_id": 1506, "uid": 1205, "max_key": 12000, "seed": "seed/roster-1506.json"},  # Riverside, City of Alma
+    ],
+    # static plat-map geometry per cemetery (produced by tools/ pipeline)
+    "geometry": {"1252": "geometry/oakgrove.json"},
+    "max_memorials_per_cemetery": 30000,
+    "page_pause_ms": [350, 600],
+}
+
+
+def load_config():
+    # deep-copy defaults so overrides never mutate DEFAULT_CONFIG's nested dicts
+    cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+    path = os.path.join(BASE_DIR, "config.json")
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            user = json.load(f)
+        for k, v in user.items():
+            # dict-valued settings merge over defaults (a partial "cadence" override
+            # must not drop the other cadence keys)
+            if isinstance(v, dict) and isinstance(cfg.get(k), dict):
+                cfg[k].update(v)
+            else:
+                cfg[k] = v
+    # env overrides
+    if os.environ.get("RADIUS_MILES"):
+        cfg["radius_miles"] = float(os.environ["RADIUS_MILES"])
+    return cfg
+
+
+# ---------------------------------------------------------------- utilities
+
+def log(msg):
+    print(time.strftime("[%Y-%m-%d %H:%M:%S] ") + msg, flush=True)
+
+
+def http_get(url, retries=3, timeout=30, opener=None, referer=None):
+    last = None
+    for attempt in range(retries):
+        try:
+            headers = {"User-Agent": UA, "Accept": "application/json,text/html"}
+            if referer:
+                headers["Referer"] = referer
+            req = urllib.request.Request(url, headers=headers)
+            open_fn = opener.open if opener else urllib.request.urlopen
+            with open_fn(req, timeout=timeout) as r:
+                return r.read()
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+            last = e
+            time.sleep(2 * (attempt + 1))
+    raise RuntimeError(f"GET failed after {retries} tries: {url} ({last})")
+
+
+def cookie_opener():
+    """BS&A's LoadContent endpoint requires the session cookies set by PropertyDetails."""
+    jar = http.cookiejar.CookieJar()
+    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+
+
+def get_json(url, **kw):
+    body = http_get(url, **kw).decode("utf-8", "replace")
+    try:
+        return json.loads(body)
+    except ValueError as e:
+        # FAG serves HTTP-200 HTML challenge/maintenance pages to scripted clients;
+        # surface as RuntimeError so per-stage handlers catch it like any fetch failure
+        raise RuntimeError(f"non-JSON response from {url}: {body[:80]!r}") from e
+
+
+def pause(cfg):
+    lo, hi = cfg["page_pause_ms"]
+    time.sleep(random.uniform(lo / 1000, hi / 1000))
+
+
+def miles(a_lat, a_lng, b_lat, b_lng):
+    r = 3958.8
+    p1, p2 = math.radians(a_lat), math.radians(b_lat)
+    dp, dl = math.radians(b_lat - a_lat), math.radians(b_lng - a_lng)
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return r * 2 * math.atan2(math.sqrt(h), math.sqrt(1 - h))
+
+
+def state_path(*parts):
+    p = os.path.join(DATA_DIR, *parts)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    return p
+
+
+def read_state(name, default=None):
+    p = os.path.join(DATA_DIR, name)
+    if os.path.exists(p):
+        try:
+            with open(p, encoding="utf-8") as f:
+                return json.load(f)
+        except (ValueError, OSError):
+            pass
+    return default
+
+
+def write_state(name, obj):
+    p = state_path(name)
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, separators=(",", ":"))
+    os.replace(tmp, p)
+
+
+# ---------------------------------------------------------------- discovery
+
+def discover(cfg):
+    """Scan configured counties; return cemeteries within radius with open requests."""
+    home = cfg["home"]
+    found = {}
+    for county_id, county in cfg["counties"].items():
+        page, total, fetched = 1, math.inf, 0
+        while fetched < total:
+            url = (f"https://www.findagrave.com/cemetery/search?"
+                   f"locationId=county_{county_id}&ajax=true&limit=20&page={page}")
+            d = get_json(url)
+            total = d.get("total") or d.get("cemeteryCount") or 0
+            got = d.get("cemeteries") or []
+            for c in got:
+                cid = c.get("cemeteryId")
+                loc = c.get("location") or {}
+                if cid in found or not loc.get("lat"):
+                    continue
+                found[cid] = {
+                    "id": cid,
+                    "name": c.get("name", ""),
+                    "county": county,
+                    "lat": loc["lat"], "lng": loc["lon"],
+                    "interments": c.get("interments") or 0,
+                    "photoRequests": c.get("photoRequests") or 0,
+                    "locationName": c.get("locationName", ""),
+                    "miles": round(miles(home["lat"], home["lng"], loc["lat"], loc["lon"]), 1),
+                }
+            fetched += len(got)
+            page += 1
+            if not got:
+                break
+            pause(cfg)
+        log(f"discovery: {county} county scanned ({fetched} cemeteries)")
+    if not found:
+        raise RuntimeError("discovery returned zero cemeteries — keeping previous registry")
+    radius = cfg["radius_miles"]
+    pinned = set(cfg["pinned"])
+    selected = [c for c in found.values()
+                if c["id"] in pinned or (c["miles"] <= radius and c["photoRequests"] > 0)]
+    selected.sort(key=lambda c: c["miles"])
+    log(f"discovery: {len(selected)} cemeteries within {radius} mi with open requests")
+    return selected
+
+
+def merge_registry(cfg, previous, fresh):
+    """Fresh discovery wins, but pinned cemeteries (and anything with cached data)
+    never silently vanish because one county scan came back short."""
+    by_id = {c["id"]: c for c in fresh}
+    pinned = set(cfg["pinned"])
+    for old in previous:
+        if old["id"] in by_id:
+            continue
+        if old["id"] in pinned or read_state(f"cem/{old['id']}-requests.json"):
+            by_id[old["id"]] = old
+    out = list(by_id.values())
+    out.sort(key=lambda c: c.get("miles") or 0)
+    return out
+
+
+# ---------------------------------------------------------------- FAG pulls
+
+def pull_requests(cfg, cem_id):
+    url = (f"https://www.findagrave.com/photo-request/search/cemetery/{cem_id}"
+           f"?ajax=true&skip=0&limit=1000")
+    d = get_json(url)
+    out = []
+    for r in d.get("photoRequests") or []:
+        has_gps = r.get("latLonMethod") == "memorial"
+        out.append({
+            "prId": r.get("photoRequestId"),
+            "mid": r.get("memorialId"),
+            "fn": r.get("firstName") or "",
+            "ln": r.get("lastName") or "",
+            "name": r.get("memorialName") or f"{r.get('firstName', '')} {r.get('lastName', '')}".strip(),
+            "by": r.get("birthYear"), "dy": r.get("deathYear"),
+            "bd": r.get("birthDate") or "", "dd": r.get("deathDate") or "",
+            "plot": r.get("longPlot") or "",
+            "notes": r.get("notes") or "",
+            "req": r.get("reqPublicName") or "",
+            "created": r.get("dateCreated") or "",
+            "lat": float(r["latitude"]) if has_gps and r.get("latitude") else None,
+            "lng": float(r["longitude"]) if has_gps and r.get("longitude") else None,
+        })
+    return [r for r in out if r["mid"]]
+
+
+def pull_memorials(cfg, cem, previous_count=0):
+    """Full memorial index for one cemetery -> compact rows."""
+    cem_id = cem["id"]
+    rows, skip, total = [], 0, math.inf
+    max_total = 0
+    while skip < total and len(rows) < cfg["max_memorials_per_cemetery"]:
+        url = (f"https://www.findagrave.com/cemetery/{cem_id}/memorial-search"
+               f"?ajax=true&limit=100&skip={skip}")
+        d = get_json(url)
+        total = d.get("total") or 0
+        max_total = max(max_total, total)
+        got = d.get("collection") or []
+        for r in got:
+            mid = r.get("memorialId")
+            if not mid:
+                continue
+            lat = lng = None
+            if r.get("latitude") is not None and r.get("longitude") is not None:
+                try:
+                    la, ln = float(r["latitude"]), float(r["longitude"])
+                    d_m = miles(cem["lat"], cem["lng"], la, ln) * 1609.34
+                    if 5 <= d_m <= 800:  # junk-pin filter (off-site or default-centroid pins)
+                        lat, lng = round(la, 6), round(ln, 6)
+                except (TypeError, ValueError):
+                    pass
+            flags = 0
+            if r.get("intermentHasPhoto"):
+                flags |= 1
+            if r.get("photoRequest"):
+                flags |= 2
+            if r.get("isVeteran"):
+                flags |= 4
+            if r.get("personHasPhoto"):
+                flags |= 8
+            rows.append([
+                mid,
+                r.get("fullName") or "",
+                r.get("maidenName") or "",
+                r.get("birthYear") or 0,
+                r.get("deathYear") or 0,
+                re.sub(r"\s+", " ", (r.get("plot") or "")).strip(),
+                lat, lng, flags,
+            ])
+        skip += 100
+        if not got:
+            break
+        pause(cfg)
+        if skip % 2000 == 0:
+            log(f"  memorials {cem['name']}: {len(rows)}/{total}")
+    # truncation guard: a mid-pull soft-block must not replace a good cache
+    floor = max(max_total, previous_count) * 0.5
+    if floor > 100 and len(rows) < floor:
+        raise RuntimeError(f"memorial pull for {cem['name']} looks truncated "
+                           f"({len(rows)} rows vs expected ~{max(max_total, previous_count)})")
+    return rows
+
+
+# ---------------------------------------------------------------- BS&A register
+
+BSA_KEEP = ["Name", "Former Name", "Sex", "Birth Date", "Burial Date", "Death Date",
+            "Veteran", "Notes", "User 3", "Buriel at Foot", "Buriel at head",
+            "Plot Number", "Section", "Block", "Lot", "Plot", "Status"]
+BSA_ROW_RE = re.compile(
+    r'label-value-row-label">([^<]*)</div><div role="cell" class="label-value-row-value">([^<]*)<')
+# BS&A section code -> (canonical section, sub). Code 25 is the unknown-plot bucket.
+BSA_SECTION = {
+    "01": ("Old Part", "1"), "02": ("Old Part", "2"), "03": ("Old Part", "3"),
+    "04": ("Old Part", "4"), "05": ("Old Part", "5"), "06": ("Vault Hill", ""),
+    "07": ("Oak Hill", ""), "09": ("Mausoleum", ""), "10": ("Round Hill", ""),
+    "11": ("Square Hill", ""), "12": ("Hofstetter Hill", ""), "13": ("Cutler Hill", ""),
+    "14": ("Single Grave", ""), "15": ("Morris Hill", ""), "16": ("Veteran Hill", ""),
+    "17": ("North Hill", ""), "25": ("", ""),
+}
+
+
+def bsa_parse_record(html):
+    rec, names = {}, []
+    for label, raw in BSA_ROW_RE.findall(html):
+        label = label.strip()
+        value = re.sub(r"&nbsp;?", " ", raw).replace("&amp;", "&").replace("&#39;", "'").strip()
+        if value == label:
+            value = ""
+        if not label:
+            continue
+        if label == "Name":
+            names.append(value)
+            rec.setdefault("Name", value)
+            continue
+        if label in BSA_KEEP:
+            rec.setdefault(label, value)
+    return rec
+
+
+def pull_register(cfg, reg):
+    """Resumable pull of one BS&A cemetery register -> roster rows."""
+    uid, max_key = reg["uid"], reg.get("max_key", 10500)
+    cache = f"bsa/{uid}.jsonl"
+    done = {}
+    p = os.path.join(DATA_DIR, cache)
+    if os.path.exists(p):
+        with open(p, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        rec = json.loads(line)
+                        done[rec["key"]] = rec
+                    except ValueError:
+                        pass
+    # New burials get keys just past the last real record. Drop cached misses in the
+    # tail band so each register cycle re-probes it instead of freezing forever.
+    real_keys = [k for k, r in done.items() if not r.get("miss")]
+    last_real = max(real_keys) if real_keys else 0
+    for k in [k for k, r in done.items() if r.get("miss") and k > last_real]:
+        del done[k]
+    todo = [k for k in range(1, max_key + 1) if k not in done]
+    if todo:
+        log(f"register uid={uid}: pulling {len(todo)} remaining keys")
+    section_map = reg.get("section_map")
+    consecutive_miss = 0
+    with open(state_path(cache), "a", encoding="utf-8") as out:
+        for k in todo:
+            if consecutive_miss > 400:  # record space exhausted — stop (don't poison the cache)
+                log(f"register uid={uid}: {consecutive_miss} consecutive misses at key {k} — record space ends")
+                break
+            try:
+                pd_url = (f"https://www.bsaonline.com/SiteSearch/PropertyDetails?uid={uid}"
+                          f"&RecordKey={k}&RecordKeyType=10&ReferenceKey={k}&ReferenceType=6"
+                          f"&SearchFocus=Cemetery%20Management&SearchCategory=Name&SearchText=x&PageIndex=1")
+                opener = cookie_opener()  # LoadContent 403s without the session cookies
+                html1 = http_get(pd_url, opener=opener).decode("utf-8", "replace")
+                m = re.search(r'LoadContent[^"\']*', html1)
+                if not m:
+                    rec = {"key": k, "miss": True}
+                    consecutive_miss += 1
+                else:
+                    lc_url = "https://www.bsaonline.com/CemeterySearch/" + m.group(0).replace("&amp;", "&")
+                    rec = bsa_parse_record(http_get(lc_url, opener=opener, referer=pd_url).decode("utf-8", "replace"))
+                    rec["key"] = k
+                    if not rec.get("Name") and not rec.get("Plot Number"):
+                        rec["miss"] = True
+                        consecutive_miss += 1
+                    else:
+                        consecutive_miss = 0
+                out.write(json.dumps(rec) + "\n")
+                done[k] = rec
+                time.sleep(random.uniform(0.15, 0.3))
+            except RuntimeError as e:
+                log(f"register uid={uid} key={k}: {e}")
+                time.sleep(5)
+    return register_rows(done, section_map)
+
+
+def register_rows(done, section_map=None):
+    rows = []
+    for k in sorted(done):
+        r = done[k]
+        if r.get("miss") or not r.get("Name"):
+            continue
+        raw_section = (r.get("Section") or "").strip()
+        if section_map == "oakgrove":
+            section, sub = BSA_SECTION.get(raw_section, (raw_section, ""))
+        else:
+            section = ("Section " + raw_section.lstrip("0")) if raw_section.isdigit() and raw_section.lstrip("0") else raw_section
+            sub = ""
+        flags = 4 if (r.get("Veteran") or "").lower().startswith("y") else 0
+        note_bits = [r.get("User 3") or "", r.get("Notes") or ""]
+        if r.get("Buriel at head"):
+            note_bits.append("head: " + r["Buriel at head"])
+        if r.get("Buriel at Foot"):
+            note_bits.append("foot: " + r["Buriel at Foot"])
+        note = re.sub(r"\s+", " ", " | ".join(b for b in note_bits if b)).strip()[:160]
+        block = (r.get("Block") or "").strip().upper()
+        block = re.sub(r"^(?:BLOCK|BLCK|BLK)\s*", "", block)  # Alma writes "BLCKT" for block T
+        rows.append([
+            r["key"], (r.get("Name") or "").strip(), (r.get("Sex") or "").strip(),
+            (r.get("Birth Date") or "").strip(), (r.get("Death Date") or "").strip(),
+            (r.get("Burial Date") or "").strip(),
+            section, sub,
+            block,
+            re.sub(r"^0+(?=\d)", "", (r.get("Lot") or "").strip()),
+            re.sub(r"^0+(?=\d)", "", (r.get("Plot") or "").strip()),
+            (r.get("Status") or "").strip(),
+            flags, note, (r.get("Former Name") or "").strip(),
+        ])
+    return rows
+
+
+# ---------------------------------------------------------------- build
+
+def build_output(cfg, registry):
+    cemeteries = []
+    for cem in registry["cemeteries"]:
+        cid = str(cem["id"])
+        requests = read_state(f"cem/{cid}-requests.json", [])
+        memorials = read_state(f"cem/{cid}-memorials.json", [])
+        entry = {
+            "id": cem["id"], "name": cem["name"], "county": cem["county"],
+            "lat": cem["lat"], "lng": cem["lng"], "miles": cem["miles"],
+            "declination": cfg["declination"],
+            "meta": {
+                "asOf": registry.get("requestsAsOf", ""),
+                "memorialsAsOf": registry.get("memorialsAsOf", {}).get(cid, ""),
+                "interments": cem.get("interments", 0),
+            },
+            "requests": requests,
+            "memorials": memorials,
+        }
+        geom_file = cfg["geometry"].get(cid)
+        if geom_file:
+            with open(os.path.join(BASE_DIR, geom_file), encoding="utf-8") as f:
+                geom = json.load(f)
+            entry["sections"] = geom.get("sections") or {}
+            entry["maps"] = geom.get("maps") or []
+        for reg in cfg["registers"]:
+            if reg["cemetery_id"] == cem["id"]:
+                roster = read_state(f"cem/{cid}-roster.json", [])
+                if roster:
+                    entry["roster"] = roster
+                    entry["bsaUid"] = reg["uid"]
+        cemeteries.append(entry)
+
+    payload = {
+        "v": 2,
+        "generated": date.today().isoformat(),
+        "home": cfg["home"],
+        "radiusMiles": cfg["radius_miles"],
+        "cemeteries": cemeteries,
+    }
+    js = ("// Cemetery Search dataset — generated " + payload["generated"] +
+          " by the refresher service\n" +
+          "window.CEMDATA = " + json.dumps(payload, separators=(",", ":")) + ";\n")
+    out_path = os.path.join(SITE_DIR, "cemetery-data.js")
+    os.makedirs(SITE_DIR, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=SITE_DIR, suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(js)
+    os.replace(tmp, out_path)
+    total_req = sum(len(c["requests"]) for c in cemeteries)
+    total_mem = sum(len(c["memorials"]) for c in cemeteries)
+    log(f"wrote cemetery-data.js: {len(cemeteries)} cemeteries, "
+        f"{total_req} requests, {total_mem} memorials, {len(js) // 1024} KB")
+    write_state("status.json", {
+        "generated": payload["generated"],
+        "ts": time.time(),
+        "cemeteries": len(cemeteries),
+        "requests": total_req,
+        "memorials": total_mem,
+    })
+
+
+# ---------------------------------------------------------------- main cycle
+
+def seed_register_cache(cfg):
+    """Copy repo-shipped register seeds into the state dir on first run."""
+    for reg in cfg["registers"]:
+        seed = reg.get("seed")
+        cid = str(reg["cemetery_id"])
+        roster_state = f"cem/{cid}-roster.json"
+        if seed and not read_state(roster_state):
+            seed_path = os.path.join(BASE_DIR, seed)
+            if os.path.exists(seed_path):
+                with open(seed_path, encoding="utf-8") as f:
+                    write_state(roster_state, json.load(f))
+                log(f"seeded register for cemetery {cid} from {seed}")
+
+
+def run_cycle(cfg, force=False):
+    now = time.time()
+    cadence = cfg["cadence"]
+    registry = read_state("registry.json", {"cemeteries": [], "ts": {}, "memorialsAsOf": {}})
+    ts = registry.setdefault("ts", {})
+
+    seed_register_cache(cfg)
+
+    # 1. discovery
+    if force or now - ts.get("discovery", 0) > cadence["discovery_hours"] * 3600:
+        try:
+            registry["cemeteries"] = merge_registry(cfg, registry.get("cemeteries", []), discover(cfg))
+            ts["discovery"] = now
+        except RuntimeError as e:
+            log(f"discovery failed (keeping previous registry): {e}")
+
+    # 2. photo requests — every run, cheap (1 call per cemetery)
+    if force or now - ts.get("requests", 0) > cadence["requests_hours"] * 3600:
+        for cem in registry["cemeteries"]:
+            try:
+                reqs = pull_requests(cfg, cem["id"])
+                write_state(f"cem/{cem['id']}-requests.json", reqs)
+                cem["photoRequests"] = len(reqs)
+                pause(cfg)
+            except RuntimeError as e:
+                log(f"requests pull failed for {cem['name']}: {e}")
+        ts["requests"] = now
+        registry["requestsAsOf"] = date.today().isoformat()
+
+    # 3. memorial indexes — when stale or missing
+    mem_as_of = registry.setdefault("memorialsAsOf", {})
+    for cem in registry["cemeteries"]:
+        cid = str(cem["id"])
+        have = read_state(f"cem/{cid}-memorials.json")
+        stale = now - ts.get(f"mem_{cid}", 0) > cadence["memorials_days"] * 86400
+        if have is None or stale or force:
+            try:
+                log(f"pulling memorial index: {cem['name']} (~{cem.get('interments', '?')} burials)")
+                rows = pull_memorials(cfg, cem, previous_count=len(have) if have else 0)
+                if rows:
+                    write_state(f"cem/{cid}-memorials.json", rows)
+                    ts[f"mem_{cid}"] = now
+                    mem_as_of[cid] = date.today().isoformat()
+            except RuntimeError as e:
+                log(f"memorial pull failed for {cem['name']}: {e}")
+
+    # 4. BS&A registers — rarely (a repo-shipped seed counts as fresh on first run)
+    for reg in cfg["registers"]:
+        cid = str(reg["cemetery_id"])
+        key = f"reg_{reg['uid']}"
+        if key not in ts and read_state(f"cem/{cid}-roster.json"):
+            ts[key] = now
+            continue
+        if force or now - ts.get(key, 0) > cadence["registers_days"] * 86400:
+            try:
+                rows = pull_register(cfg, reg)
+                if rows:
+                    write_state(f"cem/{cid}-roster.json", rows)
+                ts[key] = now
+            except RuntimeError as e:
+                log(f"register pull failed uid={reg['uid']}: {e}")
+
+    write_state("registry.json", registry)
+    build_output(cfg, registry)
+
+
+if __name__ == "__main__":
+    run_cycle(load_config(), force="--force" in sys.argv)

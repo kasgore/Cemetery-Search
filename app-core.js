@@ -48,23 +48,75 @@ const SECTION_PATTERNS = [
 ];
 const normBlock = b => String(b || '').toUpperCase().replace(/^0+(?=\d)/, '');
 CS.normBlock = normBlock;
-CS.parsePlot = function (plotStr) {
+// profile: 'oakgrove' applies Oak Grove's section-name aliases (Section 11 = Square
+// Hill etc). Every other cemetery MUST use 'generic' — the aliases would corrupt
+// their plots. Requests and anchors go through the same parser, so what matters
+// most is CONSISTENT keys, not perfect semantics.
+CS.parsePlot = function (plotStr, profile) {
   if (!plotStr) return null;
   const s = String(plotStr).replace(/[().,]/g, ' ').replace(/\s+/g, ' ').trim();
-  if (!s || /no location|unknown|pottersfield/i.test(s)) return null;
-  let section = null;
-  for (const [re, name] of SECTION_PATTERNS) if (re.test(s)) { section = name; break; }
-  if (!section) return null;
-  let sub = (s.match(/\bSub\.?\s*:?\s*(\d+)\b/i) || [])[1] || '';
-  let block = normBlock((s.match(/\b(?:Blk|Block|Row)\s+([A-Z]{1,2}|\d{1,3})\b/i) || [])[1] || '');
-  const lot = (s.match(/\bLot:?\s*#?\s*([A-Z0-9]+(?:[-/][A-Z0-9]+)?)\b/i) || [])[1] || '';
-  const grave = (s.match(/\b(?:Grave|Space|Plot)\s+([0-9]+(?:[-/][0-9]+)?)\b/i) || [])[1] || '';
-  // Old Part: subs 1-5 are often written without the word "Sub"
-  if (section === 'Old Part' && !sub) {
-    const m = s.match(/^old\s+part\s+(?:sec(?:tion)?\s+)?([1-5])\b/i);
-    if (m) sub = m[1];
-    else if (/^[1-5]$/.test(block)) { sub = block; block = ''; }
+  if (!s || /no location|unknown|pottersfield|interment record only/i.test(s)) return null;
+
+  if (profile === 'oakgrove') {
+    let section = null;
+    for (const [re, name] of SECTION_PATTERNS) if (re.test(s)) { section = name; break; }
+    if (!section) return null;
+    let sub = (s.match(/\bSub\.?\s*:?\s*(\d+)\b/i) || [])[1] || '';
+    let block = normBlock((s.match(/\b(?:Blk|Block|Row)\s+([A-Z]{1,2}|\d{1,3})\b/i) || [])[1] || '');
+    const lot = (s.match(/\bLot:?\s*#?\s*([A-Z0-9]+(?:[-/][A-Z0-9]+)?)\b/i) || [])[1] || '';
+    const grave = (s.match(/\b(?:Grave|Space|Plot)\s+([0-9]+(?:[-/][0-9]+)?)\b/i) || [])[1] || '';
+    // Old Part: subs 1-5 are often written without the word "Sub"
+    if (section === 'Old Part' && !sub) {
+      const m = s.match(/^old\s+part\s+(?:sec(?:tion)?\s+)?([1-5])\b/i);
+      if (m) sub = m[1];
+      else if (/^[1-5]$/.test(block)) { sub = block; block = ''; }
+    }
+    const lotNum = parseInt(lot);
+    return { section, sub, block, lot: isFinite(lotNum) ? String(lotNum) : lot, grave };
   }
+
+  /* generic profile */
+  let sub = (s.match(/\bSub\.?\s*:?\s*(\d+)\b/i) || [])[1] || '';
+  let block = normBlock((s.match(/\b(?:Blk|Block|Row)[\s\-:#]*([A-Z]{1,2}|\d{1,3})\b/i) || [])[1] || '');
+  let lot = (s.match(/\bLot[\s\-:#]*([A-Z0-9]+(?:[-/][A-Z0-9]+)?)\b/i) || [])[1] || '';
+  let grave = (s.match(/\b(?:Grave|Space|Sp)[\s\-:#]*([A-Z0-9]+(?:[-/][A-Z0-9]+)?)\b/i) || [])[1] || '';
+  const plotTok = (s.match(/\bPlot[\s\-:#]*([A-Z0-9]+(?:[-/][A-Z0-9]+)?)\b/i) || [])[1] || '';
+  if (plotTok) {
+    if (!grave) grave = plotTok;       // "Plot 3" usually means the grave slot…
+    else if (!lot) lot = plotTok;      // …but with an explicit Grave present it's the lot
+  }
+  let section = '';
+  const secm = s.match(/\bSec(?:t?ion)?[\s\-.:#]*([A-Za-z0-9]+)\b/i);
+  if (secm && !/^(lot|blk|block|row|grave|space)$/i.test(secm[1])) section = 'Section ' + secm[1].toUpperCase();
+  if (!section) {
+    const lead = s.match(/^(.*?)\s*\b(?:Blk|Block|Row|Sub|Lot|Grave|Space|Sp)\b/i);
+    if (lead) {
+      // strip record-id noise ("ID 1849", "#123", bare long numbers) — they would
+      // make every section key unique and kill all anchor matching
+      const cleaned = lead[1].replace(/\b(?:id|no)\s*#?\s*\d+\b/ig, '').replace(/\b\d{3,}\b/g, '')
+        .replace(/\s+/g, ' ').trim();
+      if (cleaned.length > 1 && !/^\d+$/.test(cleaned)) section = cleaned;
+    }
+  }
+  if (!section && !block && !lot && !grave) {
+    // dash-coded plots, e.g. "Ithaca-2nd ADD-31--2" or "CEM-SEC-BLK-LOT-GRV"
+    const dash = s.split(/\s*-\s*/);
+    if (dash.length >= 4) {
+      section = dash[1] || '';
+      block = normBlock(dash[2] || '');
+      lot = (dash[3] || '').replace(/^0+(?=\d)/, '');
+      grave = dash[4] || '';
+    } else {
+      // terse codes: "12B", "12-B", bare block letter "A"
+      let m = s.match(/^(\d{1,4})\s*-?\s*([A-Za-z])$/);
+      if (m) { section = '*'; lot = m[1]; grave = m[2].toUpperCase(); }
+      else if (/^[A-Za-z]{1,2}$/.test(s)) { section = '*'; block = s.toUpperCase(); }
+      else if (/^\d{1,4}$/.test(s)) { section = '*'; lot = s; }
+      else return null;
+    }
+  }
+  if (!section && (block || lot || grave)) section = '*';
+  if (!section) return null;
   const lotNum = parseInt(lot);
   return { section, sub, block, lot: isFinite(lotNum) ? String(lotNum) : lot, grave };
 };
@@ -84,9 +136,11 @@ CS.BSA_SECTION = BSA_SECTION;
 CS.parseBsaCode = function (code) {
   const m = String(code || '').trim().match(/^([A-Z]+)-(\d+)-([A-Z0-9]*)-([A-Z0-9]*)-?([0-9]*)$/i);
   if (!m) return null;
-  const canon = BSA_SECTION[m[2]] || BSA_SECTION[m[2].replace(/^0/, '')];
+  // the section-code table is Oak Grove's — other cemeteries keep numeric sections
+  const isOakGrove = /^OAKGROVE$/i.test(m[1]);
+  const canon = isOakGrove ? (BSA_SECTION[m[2]] || BSA_SECTION[m[2].replace(/^0/, '')]) : null;
   return {
-    section: canon ? canon[0] : ('Section ' + m[2]),
+    section: canon ? canon[0] : ('Section ' + m[2].replace(/^0+(?=\d)/, '')),
     sub: canon ? canon[1] : '',
     block: normBlock(m[3] || ''),
     lot: (m[4] || '').replace(/^0+(?=\d)/, ''),
@@ -166,20 +220,63 @@ CS.splitName = function (full) {
 };
 
 /* ---------------- model ---------------- */
-// Builds the unified in-memory model from the baked dataset + user updates.
+// Wraps a v2 multi-cemetery dataset (window.CEMDATA) or a legacy single-cemetery
+// one (window.OAKGROVE) into a list of per-cemetery descriptors.
+CS.normalizeDataset = function (raw) {
+  if (raw && raw.v === 2 && Array.isArray(raw.cemeteries)) {
+    return {
+      generated: raw.generated || '',
+      home: raw.home,
+      radiusMiles: raw.radiusMiles || null,
+      cemeteries: raw.cemeteries.map(c => ({
+        id: c.id, name: c.name || ('Cemetery ' + c.id), county: c.county || '',
+        miles: c.miles != null ? c.miles : null, bsaUid: c.bsaUid || null,
+        data: {
+          meta: {
+            cemetery: c.name, fagCemeteryId: c.id,
+            cem: { lat: c.lat, lng: c.lng },
+            declination: c.declination != null ? c.declination : -6.6,
+            asOf: (c.meta && (c.meta.memorialsAsOf || c.meta.asOf)) || raw.generated || '',
+          },
+          sections: c.sections || {},
+          maps: c.maps || [],
+          requests: c.requests || [],
+          memorials: c.memorials || [],
+          roster: c.roster || [],
+        },
+      })),
+    };
+  }
+  if (raw && raw.meta) { // legacy OAKGROVE shape
+    return {
+      generated: raw.meta.asOf || '', home: raw.meta.cem, radiusMiles: null,
+      cemeteries: [{
+        id: raw.meta.fagCemeteryId || 0, name: raw.meta.cemetery || 'Cemetery',
+        county: '', miles: 0, bsaUid: 2024, data: raw,
+      }],
+    };
+  }
+  return { generated: '', home: { lat: 43.4202995, lng: -84.6136017 }, radiusMiles: null, cemeteries: [] };
+};
+
+// Builds the unified in-memory model from one cemetery's dataset + user updates.
 CS.buildModel = function (data, updates) {
   updates = updates || {};
   const model = {
     meta: data.meta,
     proj: CS.makeProj(data.meta.cem),
-    sections: data.sections || {},
+    sections: Object.assign({}, data.sections || {}),
     maps: data.maps || [],
     memorials: [],
     memById: new Map(),
     roster: [],
     requests: [],
     plotIndex: new Map(),   // "section|sub|block" -> [entries {who}]
+    anchorIndex: new Map(), // "section|sub|block|lot" -> [{e,n}] from GPS-tagged memorials
   };
+
+  const profile = (data.meta && data.meta.fagCemeteryId === 1252) ? 'oakgrove' : 'generic';
+  model.profile = profile;
 
   /* memorials: baked, then overlay updates (by id) */
   const memRows = new Map();
@@ -189,7 +286,7 @@ CS.buildModel = function (data, updates) {
     const [midRaw, name, maiden, by, dy, plot, lat, lng, flags] = row;
     const mid = +midRaw || null;
     if (!mid) continue;
-    const p = CS.parsePlot(plot);
+    const p = CS.parsePlot(plot, profile);
     const sn = CS.splitName(name && name.includes(',') ? name : nameFromFag(name));
     const mem = {
       kind: 'mem', mid, name, maiden: maiden || '', by: by || 0, dy: dy || 0,
@@ -210,10 +307,17 @@ CS.buildModel = function (data, updates) {
     let rLot = String(lot || ''), rGrave = String(grave || '');
     // Single Grave: BS&A stores the cell number in the grave field (OAKGROVE-14-{row}--{cell})
     if (section === 'Single Grave' && !rLot && rGrave) { rLot = rGrave; rGrave = ''; }
+    // generic cemeteries: numeric register sections align with parsed "Section N";
+    // a sectionless register row with block/lot still keys to the '*' bucket
+    let rSection = section || '';
+    if (profile !== 'oakgrove') {
+      if (/^\d+$/.test(rSection)) rSection = 'Section ' + rSection.replace(/^0+(?=\d)/, '');
+      else if (!rSection && (block || rLot)) rSection = '*';
+    }
     model.roster.push({
       kind: 'ros', key, name, sex: sex || '', bd: bd || '', dd: dd || '', burial: burial || '',
       by: yOf(bd), dy: yOf(dd) || yOf(burial),
-      section: section || '', sub: sub || '', block: normBlock(block),
+      section: rSection, sub: sub || '', block: normBlock(block),
       lot: rLot, grave: rGrave,
       status: status || '', veteran: !!(flags & 4), note: note || '', formerName: formerName || '',
       last: sn.last, first: sn.first,
@@ -221,7 +325,8 @@ CS.buildModel = function (data, updates) {
   }
 
   /* requests: updates replace baked entirely (a refresh is a full snapshot) */
-  const reqRows = (updates.requests && updates.requests.length ? updates.requests : data.requests) || [];
+  // Array.isArray (not length) so an imported EMPTY snapshot legitimately clears requests
+  const reqRows = (Array.isArray(updates.requests) ? updates.requests : data.requests) || [];
   for (const r of reqRows) {
     const mid = +r.mid || null;
     if (!mid) continue;
@@ -232,15 +337,51 @@ CS.buildModel = function (data, updates) {
       bd: r.bd || '', dd: r.dd || '', plot: r.plot || '', notes: r.notes || '',
       req: r.req || '', created: r.created || '',
       lat: r.lat != null ? r.lat : null, lng: r.lng != null ? r.lng : null,
-      p: CS.parsePlot(r.plot),
+      p: CS.parsePlot(r.plot, profile),
     });
   }
 
   buildPlotIndex(model);
+  buildAnchorIndex(model);
+  deriveSections(model);
   matchRosterToMemorials(model);
   for (const req of model.requests) enrichRequest(model, req);
   return model;
 };
+
+/* GPS-tagged memorials with parsed plots become location anchors: the proven
+   field fact is that a same-lot anchor predicts a grave within ~2-5 m. */
+function buildAnchorIndex(model) {
+  const seenCoord = new Map(); // dedupe bulk-pinned families (same exact coordinate)
+  for (const m of model.memorials) {
+    if (m.lat == null || m.lng == null || !m.p || !m.p.section) continue;
+    const en = model.proj.toEN(m.lat, m.lng);
+    const ck = m.lat.toFixed(6) + ',' + m.lng.toFixed(6);
+    const w = seenCoord.has(ck) ? 0 : 1;
+    seenCoord.set(ck, true);
+    if (!w) continue;
+    const k = m.p.section + '|' + (m.p.sub || '') + '|' + (m.p.block || '') + '|' + (parseInt(m.p.lot) || m.p.lot || '');
+    if (!model.anchorIndex.has(k)) model.anchorIndex.set(k, []);
+    model.anchorIndex.get(k).push({ e: en.e, n: en.n });
+  }
+}
+
+/* For cemeteries without baked section centroids, derive them from anchors. */
+function deriveSections(model) {
+  if (Object.keys(model.sections).length) return;
+  const bySec = new Map();
+  for (const [k, pts] of model.anchorIndex) {
+    const sec = k.split('|')[0];
+    if (!bySec.has(sec)) bySec.set(sec, []);
+    bySec.get(sec).push(...pts);
+  }
+  for (const [sec, pts] of bySec) {
+    if (pts.length < 3) continue;
+    const med = arr => { const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+    const ll = model.proj.toLL(med(pts.map(p => p.e)), med(pts.map(p => p.n)));
+    model.sections[sec] = { lat: +ll.lat.toFixed(6), lng: +ll.lng.toFixed(6), anchors: pts.length, derived: true };
+  }
+}
 
 // Sections whose maps are lots-only (lot numbers unique per sub) — the register's
 // legacy numeric blocks would otherwise split neighbors into disjoint buckets.
@@ -340,11 +481,66 @@ function scorePair(r, m) {
 }
 
 /* ---------------- geometry engine ---------------- */
+function anchorCluster(pts) {
+  if (!pts || !pts.length) return null;
+  const med = arr => { const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+  let e = med(pts.map(q => q.e)), n = med(pts.map(q => q.n));
+  let kept = pts.filter(q => Math.hypot(q.e - e, q.n - n) <= 25);
+  if (!kept.length) kept = pts;
+  e = med(kept.map(q => q.e)); n = med(kept.map(q => q.n));
+  const spread = Math.sqrt(kept.reduce((s, q) => s + ((q.e - e) ** 2 + (q.n - n) ** 2), 0) / kept.length);
+  return { e, n, spread, count: kept.length };
+}
+function anchorLocate(model, p, lotNum) {
+  const base = p.section + '|' + (p.sub || '') + '|' + (p.block || '') + '|';
+  // exact lot — only when the query actually HAS a lot (an empty lot would match the
+  // whole lot-less bucket and masquerade as a lot-level fix)
+  const exact = (isFinite(lotNum) || p.lot) ? model.anchorIndex.get(base + (isFinite(lotNum) ? lotNum : p.lot)) : null;
+  if (exact && exact.length) {
+    const c = anchorCluster(exact);
+    const ll = model.proj.toLL(c.e, c.n);
+    return { ...ll, acc: Math.round(Math.min(18, Math.max(6, 6 + c.spread / 2))), level: 'lot', map: null, xy: null, src: 'anchors' };
+  }
+  // adjacent numeric lots in the same block
+  if (isFinite(lotNum)) {
+    const near = [];
+    for (let d = 1; d <= 3; d++) {
+      for (const l of [lotNum - d, lotNum + d]) {
+        const pts = model.anchorIndex.get(base + l);
+        if (pts) { const c = anchorCluster(pts); near.push({ c, w: 1 / (1 + d) }); }
+      }
+      if (near.length >= 2) break;
+    }
+    if (near.length) {
+      let se = 0, sn = 0, sw = 0;
+      for (const { c, w } of near) { se += c.e * w; sn += c.n * w; sw += w; }
+      const ll = model.proj.toLL(se / sw, sn / sw);
+      return { ...ll, acc: 14, level: 'adjacent', map: null, xy: null, src: 'anchors' };
+    }
+  }
+  // block cluster
+  if (p.block) {
+    const pts = [];
+    for (const [k, v] of model.anchorIndex) if (k.startsWith(base)) pts.push(...v);
+    if (pts.length >= 2) {
+      const c = anchorCluster(pts);
+      const ll = model.proj.toLL(c.e, c.n);
+      return { ...ll, acc: Math.round(Math.min(45, Math.max(18, 15 + c.spread / 2))), level: 'block', map: null, xy: null, src: 'anchors' };
+    }
+  }
+  return null;
+}
+
 CS.locate = function (model, p) {
   // p: {section, sub, block, lot, grave}; returns {lat,lng,acc,level,map,xy} or null
   if (!p || !p.section) return null;
   const maps = model.maps.filter(m => m.section === p.section && (p.section !== 'Old Part' || !p.sub || m.sub === p.sub));
   const lotNum = parseInt(p.lot);
+  const anchors = { lot: null, computed: false };
+  const anchorsAt = () => {
+    if (!anchors.computed) { anchors.lot = anchorLocate(model, p, lotNum); anchors.computed = true; }
+    return anchors.lot;
+  };
   // exact lot entry
   for (const m of maps) {
     if (!m.transform) continue;
@@ -363,6 +559,8 @@ CS.locate = function (model, p) {
       }
     }
   }
+  // same-lot GPS anchors beat everything except a drawn map lot
+  { const a = anchorsAt(); if (a && a.level === 'lot') return a; }
   // adjacent lot interpolation (same block, numeric lots)
   if (isFinite(lotNum)) {
     for (const m of maps) {
@@ -380,7 +578,9 @@ CS.locate = function (model, p) {
       }
     }
   }
-  // block centroid
+  // near-lot anchors
+  { const a = anchorsAt(); if (a && a.level === 'adjacent') return a; }
+  // block centroid from the plat map
   if (p.block) {
     for (const m of maps) {
       if (!m.transform) continue;
@@ -393,6 +593,8 @@ CS.locate = function (model, p) {
       }
     }
   }
+  // block-level anchor cluster
+  { const a = anchorsAt(); if (a) return a; }
   // section centroid
   const sec = model.sections[p.section];
   if (sec) return { lat: sec.lat, lng: sec.lng, acc: 45, level: 'section', map: null, xy: null };
@@ -430,8 +632,9 @@ function enrichRequest(model, req) {
   // best plot info: locate BOTH sources and keep whichever resolves more precisely
   req.pFag = req.p;
   req.pRos = req.ros && req.ros.section ? { section: req.ros.section, sub: req.ros.sub, block: req.ros.block, lot: req.ros.lot, grave: req.ros.grave } : null;
+  // '*' is the "no section info" sentinel — never a disagreement by itself
   req.plotConflict = !!(req.pFag && req.pRos && req.pFag.section && req.pRos.section &&
-    (req.pFag.section !== req.pRos.section ||
+    ((req.pFag.section !== req.pRos.section && req.pFag.section !== '*' && req.pRos.section !== '*') ||
      (req.pFag.block && req.pRos.block && req.pFag.block !== req.pRos.block) ||
      (req.pFag.lot && req.pRos.lot && isFinite(+req.pFag.lot) && isFinite(+req.pRos.lot) && String(+req.pFag.lot) !== String(+req.pRos.lot))));
   // location cascade
@@ -466,9 +669,10 @@ CS.neighbors = function (model, p, excludeMid) {
   for (const { p: q, who } of all) {
     if (who.kind === 'mem' && who.mid === excludeMid) continue;
     const qLot = parseInt(q.lot);
-    let dist;
-    if (isFinite(lotNum) && isFinite(qLot)) dist = Math.abs(qLot - lotNum);
-    else if (String(q.lot) === String(p.lot)) dist = 0;
+    let dist, rel;
+    if (isFinite(lotNum) && isFinite(qLot)) { dist = Math.abs(qLot - lotNum); rel = dist === 0 ? 'same lot' : dist + ' lot' + (dist > 1 ? 's' : '') + ' away'; }
+    else if (p.lot && q.lot && String(q.lot) === String(p.lot)) { dist = 0; rel = 'same lot'; }
+    else if (!p.lot && !q.lot) { dist = 3; rel = 'same block'; } // lot-less rows are block-mates, not lot-mates
     else continue;
     if (dist > 3) continue;
     // dedupe: matched roster+memorial pairs count once (prefer memorial)
@@ -477,7 +681,7 @@ CS.neighbors = function (model, p, excludeMid) {
     if (seen.has(dk)) continue;
     seen.add(dk);
     items.push({
-      who, lotDist: dist, lot: q.lot, grave: q.grave || '',
+      who, lotDist: dist, rel, lot: q.lot, grave: q.grave || '',
       name: who.name, years: yearsOf(who),
       hasPhoto: who.kind === 'mem' ? who.hasGravePhoto : (who.mem ? who.mem.hasGravePhoto : false),
       mid: who.kind === 'mem' ? who.mid : (who.mem ? who.mem.mid : null),
@@ -493,6 +697,35 @@ function yearsOf(w) {
   return (by || '?') + '–' + (dy || '?');
 }
 CS.yearsOf = yearsOf;
+
+/* ---------------- family hints ---------------- */
+// For requests with no plot info: same-surname burials whose graves ARE locatable.
+// Families bought adjacent lots; spouses are usually in the same lot even unmarked.
+CS.familyHints = function (model, req, limit) {
+  const lastN = CS.normName(req.ln), lastS = CS.soundex(req.ln);
+  if (!lastN) return [];
+  const out = [];
+  for (const m of model.memorials) {
+    if (m.mid === req.mid) continue;
+    const match = CS.normName(m.last) === lastN || CS.normName(m.maiden) === lastN ||
+      CS.soundex(m.last) === lastS;
+    if (!match) continue;
+    let loc = null;
+    if (m.lat != null) loc = { lat: m.lat, lng: m.lng, acc: 6, level: 'gps' };
+    else if (m.p) loc = CS.locate(model, m.p);
+    const yearGap = (req.dy && m.dy) ? Math.abs(req.dy - m.dy) : (req.by && m.by) ? Math.abs(req.by - m.by) : 60;
+    out.push({
+      name: m.name, years: yearsOf(m), mid: m.mid, hasPhoto: m.hasGravePhoto,
+      plot: m.plot || '', loc, yearGap,
+      exactLast: CS.normName(m.last) === lastN || CS.normName(m.maiden) === lastN,
+    });
+  }
+  out.sort((a, b) =>
+    (b.exactLast ? 1 : 0) - (a.exactLast ? 1 : 0) ||
+    ((b.loc ? 1 : 0) - (a.loc ? 1 : 0)) ||
+    a.yearGap - b.yearGap);
+  return out.slice(0, limit || 8);
+};
 
 /* ---------------- search ---------------- */
 CS.search = function (model, q, limit) {
@@ -510,6 +743,18 @@ CS.search = function (model, q, limit) {
   for (const r of model.roster) {
     if (r.mem) continue; // shown via memorial
     if (test(r.name, r.formerName)) { out.push({ kind: 'ros', item: r }); if (out.length >= (limit || 60)) return out; }
+  }
+  return out;
+};
+// search across many cemetery models; results carry their model
+CS.searchAll = function (models, q, limit) {
+  const out = [];
+  for (const model of models) {
+    for (const hit of CS.search(model, q, limit)) {
+      hit.model = model;
+      out.push(hit);
+      if (out.length >= (limit || 60)) return out;
+    }
   }
   return out;
 };
@@ -595,7 +840,7 @@ CS.parseMemorialsJson = function (text, cem) {
   return { memorials };
 };
 // BS&A paste / clerk sheet -> roster rows
-CS.parseRosterText = function (text) {
+CS.parseRosterText = function (text, profile) {
   const rows = [];
   const lines = String(text || '').split(/\r?\n/);
   let k = -1;
@@ -608,7 +853,7 @@ CS.parseRosterText = function (text) {
     let section = '', sub = '', block = '', lot = '', grave = '';
     if (parsed) ({ section, sub, block, lot, grave } = parsed);
     else {
-      const p = CS.parsePlot(s);
+      const p = CS.parsePlot(s, profile);
       if (p) ({ section, sub, block, lot, grave } = p);
     }
     if (!nm && !parsed) continue;
@@ -620,7 +865,7 @@ CS.parseRosterText = function (text) {
   }
   return { roster: rows };
 };
-CS.parseRosterSheet = function (rows) {
+CS.parseRosterSheet = function (rows, profile) {
   if (!rows || rows.length < 2) return { error: 'Empty sheet.' };
   const header = rows[0].map(h => String(h || '').trim().toLowerCase());
   const find = (...names) => { for (const n of names) { const i = header.indexOf(n); if (i >= 0) return i; } return -1; };
@@ -648,9 +893,10 @@ CS.parseRosterSheet = function (rows) {
     }
     if (!section && iSec >= 0) {
       const raw = String(r[iSec] || '').trim();
-      const canon = BSA_SECTION[raw] || BSA_SECTION[raw.replace(/^0/, '')];
+      const canon = profile === 'oakgrove' ? (BSA_SECTION[raw] || BSA_SECTION[raw.replace(/^0/, '')]) : null;
       if (canon) { section = canon[0]; sub = canon[1]; }
-      else { const p = CS.parsePlot(raw + ' Lot 0'); section = p ? p.section : raw; }
+      else if (/^\d+$/.test(raw)) section = 'Section ' + raw.replace(/^0+(?=\d)/, '');
+      else { const p = CS.parsePlot(raw + ' Lot 0', profile); section = p ? p.section : raw; }
       block = iBlk >= 0 ? String(r[iBlk] || '').trim().toUpperCase() : '';
       lot = iLot >= 0 ? String(r[iLot] || '').trim().replace(/^0+(?=\d)/, '') : '';
       grave = iGrv >= 0 ? String(r[iGrv] || '').trim() : '';

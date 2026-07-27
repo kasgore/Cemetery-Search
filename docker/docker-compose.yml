@@ -1,13 +1,22 @@
-# Cemetery Search — Portainer stack
-# Serves the static app with nginx. Extract cemetery-search-site.tar.gz into
-# ./site next to this file (see README.md), then deploy the stack.
+# Cemetery Search — Portainer stack (Flask + automatic data refresher)
+#
+# Build-based stack: point Portainer at the repository (Stacks -> Add stack ->
+# Repository, compose path docker/docker-compose.yml) or copy the repo to the
+# host and use this file. See docker/README.md.
 services:
   cemetery-search:
-    image: nginx:1.27-alpine
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     container_name: cemetery-search
     restart: unless-stopped
     ports:
-      - "8420:80"
+      - "8420:8420"
+    environment:
+      REFRESH_HOURS: "6"     # photo requests refresh cadence
+      RADIUS_MILES: "15"     # how far out to auto-include cemeteries with requests
     volumes:
-      - ./site:/usr/share/nginx/html:ro
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - cemetery_data:/data  # caches + generated dataset survive rebuilds
+
+volumes:
+  cemetery_data:

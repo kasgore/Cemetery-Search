@@ -270,9 +270,10 @@
 
 <header>
   <div class="header-inner">
-    <div>
+    <div style="min-width:0;">
       <h1>Cemetery Search <span class="ornament">&#x2767;</span></h1>
-      <div class="subtitle" id="subtitle">Oak Grove Cemetery &middot; St. Louis, MI</div>
+      <div class="subtitle" id="subtitle">Loading…</div>
+      <select id="cem-select" style="margin-top:6px; max-width:min(78vw,430px); font-family:var(--font-mono); font-size:0.72rem; padding:6px 8px; background:var(--bg); border:1px solid var(--stone-light); color:var(--ink);"></select>
     </div>
     <div class="head-stats">
       <span id="gps-chip" title="Tap to toggle GPS">GPS off</span><br>
@@ -340,6 +341,7 @@
   <section class="panel" id="panel-data">
     <div class="card" id="dataset-card">
       <h2>Loaded Dataset</h2>
+      <div id="server-status" class="small" style="margin-bottom:8px;"></div>
       <div id="dataset-info" class="mono small">No dataset.</div>
       <div class="button-row">
         <button class="secondary" id="btn-export">Export progress</button>
@@ -351,11 +353,13 @@
     </div>
 
     <div class="card">
-      <h2>Refresh photo requests</h2>
-      <p>Requests change as people fulfill and add them. Two ways to refresh:</p>
+      <h2>Manual data updates</h2>
+      <p class="small">When served by the home-server container, everything below happens automatically — these tools are for the static (github.io) copy or for out-of-band fixes.</p>
+      <p>Cemetery to update: <select id="data-cem" class="texty" style="font-family:var(--font-mono); font-size:0.75rem; padding:6px;"></select></p>
+      <h3>Photo requests</h3>
       <ol>
-        <li><strong>Official download:</strong> open the <a href="https://www.findagrave.com/photo-request/search/cemetery/1252" target="_blank" rel="noopener">photo request page</a>, tap <em>Download List</em> (CSV or XLSX), then drop the file below.</li>
-        <li><strong>One-tap bookmarklet:</strong> drag this to your bookmarks bar (on desktop), or copy its code into a new bookmark: <a href="#" class="bkm" id="bkm-requests">&#x2693; Grab photo requests</a>. Open the photo request page, tap the bookmark, and it copies fresh data — paste it below.</li>
+        <li><strong>Official download:</strong> open the cemetery's photo request page on Find a Grave, tap <em>Download List</em> (CSV or XLSX), then drop the file below.</li>
+        <li><strong>One-tap bookmarklet:</strong> drag this to your bookmarks bar (on desktop), or copy its code into a new bookmark: <a href="#" class="bkm" id="bkm-requests">&#x2693; Grab photo requests</a>. Open the cemetery's photo request page, tap the bookmark, and paste the result below.</li>
       </ol>
       <div class="databox">
         <textarea id="fag-input" placeholder="Paste bookmarklet JSON or CSV text here — or drop the downloaded file on the zone below."></textarea>
@@ -371,7 +375,7 @@
 
     <div class="card">
       <h2>Update burial register / memorials</h2>
-      <p class="small">The app ships with the full city burial register (BS&amp;A) and Find a Grave memorial index baked in. To refresh memorials (new GPS pins improve accuracy), use this bookmarklet on any Find a Grave page for this cemetery, then paste the result: <a href="#" class="bkm" id="bkm-memorials">&#x25CE; Grab memorial index</a></p>
+      <p class="small">To refresh a cemetery's memorial index by hand (new GPS pins improve accuracy), use this bookmarklet on any Find a Grave page, then paste the result: <a href="#" class="bkm" id="bkm-memorials">&#x25CE; Grab memorial index</a></p>
       <div class="databox">
         <textarea id="mem-input" placeholder="Paste memorial-index JSON from the bookmarklet here."></textarea>
         <div class="button-row">
@@ -471,7 +475,7 @@
 
 <footer>Data stays on your device &middot; Built for finding the forgotten</footer>
 
-<script src="./oakgrove-data.js"></script>
+<script src="./cemetery-data.js"></script>
 <script src="./app-core.js"></script>
 <script src="./app-map.js"></script>
 <script src="./app-ui.js"></script>

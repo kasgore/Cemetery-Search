@@ -1,21 +1,27 @@
 /* ==========================================================
-   Cemetery Search — shared canvas map renderer.
-   World space: local meters east/north of the cemetery datum
-   (north-up). Screen: canvas px, y down.
+   Cemetery Search — canvas map renderer (layer-based).
+   World space: meters east/north of a fixed datum (home point),
+   so any number of cemeteries render on one canvas. Screen: px, y down.
+   Layers are plain lat/lng lists prepared by the UI layer:
+   { lots:[{lat,lng,label}], blocks:[{lat,lng,label}], roads:[{lat,lng}],
+     sections:[{lat,lng,label}], cems:[{lat,lng,label}], targets:[...] }
    ========================================================== */
 (function () {
 'use strict';
 
-function MapView(canvas, model, opts) {
+// low enough to fit the whole multi-cemetery region on a phone canvas
+const MIN_SCALE = 0.002;
+
+function MapView(canvas, proj, opts) {
   this.canvas = canvas;
   this.ctx = canvas.getContext('2d');
-  this.model = model;
+  this.proj = proj;                 // global projection (home-anchored)
   this.opts = opts || {};
-  this.scale = 1.4;          // px per meter (logical px)
-  this.cx = 0; this.cy = 60; // world center (m east / north)
-  this.user = null;          // {lat,lng,acc}
-  this.targets = [];         // [{lat,lng,color,label,ref,r}]
-  this.highlight = null;     // {lat,lng,acc}
+  this.scale = 1.4;                 // px per meter
+  this.cx = 0; this.cy = 0;         // world center (m east/north of datum)
+  this.user = null;                 // {lat,lng,acc}
+  this.layers = { lots: [], blocks: [], roads: [], sections: [], cems: [], targets: [] };
+  this.highlight = null;            // {lat,lng,acc}
   this._pointers = new Map();
   this._lastPinch = null;
   this._bindings();
@@ -40,34 +46,35 @@ MapView.prototype.screenToWorld = function (x, y) {
   return { e: this.cx + (x - this.w / 2) / this.scale, n: this.cy - (y - this.h / 2) / this.scale };
 };
 MapView.prototype.llToScreen = function (lat, lng) {
-  const en = this.model.proj.toEN(lat, lng);
+  const en = this.proj.toEN(lat, lng);
   return this.worldToScreen(en.e, en.n);
 };
 
-MapView.prototype.fit = function () {
-  // fit all lot entries (or sections) into view
-  let minE = Infinity, maxE = -Infinity, minN = Infinity, maxN = -Infinity;
-  let any = false;
-  for (const m of this.model.maps) {
-    if (!m.transform) continue;
-    for (const en of m.entries) {
-      const w = CS.applyT(m.transform, en[2], en[3]);
-      if (!isFinite(w.e) || !isFinite(w.n)) continue;
-      minE = Math.min(minE, w.e); maxE = Math.max(maxE, w.e);
-      minN = Math.min(minN, w.n); maxN = Math.max(maxN, w.n);
-      any = true;
-    }
+MapView.prototype.fitTo = function (points, minSpanM) {
+  // points: [{lat,lng}] — fit view around them
+  let minE = Infinity, maxE = -Infinity, minN = Infinity, maxN = -Infinity, any = false;
+  for (const p of points) {
+    if (p == null || p.lat == null) continue;
+    const en = this.proj.toEN(p.lat, p.lng);
+    if (!isFinite(en.e) || !isFinite(en.n)) continue;
+    minE = Math.min(minE, en.e); maxE = Math.max(maxE, en.e);
+    minN = Math.min(minN, en.n); maxN = Math.max(maxN, en.n);
+    any = true;
   }
-  if (!any) { minE = -250; maxE = 250; minN = -250; maxN = 250; }
-  const padE = (maxE - minE) * 0.07 + 15, padN = (maxN - minN) * 0.07 + 15;
+  if (!any) { this.cx = 0; this.cy = 0; this.scale = 1; this.draw(); return; }
+  // enforce minSpanM as a real minimum span (a single point must not over-zoom)
+  const span = Math.max(minSpanM || 120, maxE - minE, maxN - minN);
+  const dE = Math.max(0, span - (maxE - minE)) / 2, dN = Math.max(0, span - (maxN - minN)) / 2;
+  minE -= dE; maxE += dE; minN -= dN; maxN += dN;
+  const padE = span * 0.08 + 12, padN = span * 0.08 + 12;
   minE -= padE; maxE += padE; minN -= padN; maxN += padN;
   this.cx = (minE + maxE) / 2; this.cy = (minN + maxN) / 2;
-  this.scale = Math.min(this.w / (maxE - minE), this.h / (maxN - minN));
+  this.scale = Math.min(60, Math.max(MIN_SCALE, Math.min(this.w / (maxE - minE), this.h / (maxN - minN))));
   this.draw();
 };
 
 MapView.prototype.centerOn = function (lat, lng, scale) {
-  const en = this.model.proj.toEN(lat, lng);
+  const en = this.proj.toEN(lat, lng);
   this.cx = en.e; this.cy = en.n;
   if (scale) this.scale = scale;
   this.draw();
@@ -82,60 +89,67 @@ MapView.prototype.draw = function () {
   ctx.fillRect(0, 0, w, h);
 
   const s = this.scale;
-  const showLots = s > 0.55, showLotNums = s > 3.4, showBlocks = s > 0.8, showRoads = s > 0.7;
+  const L = this.layers;
+  const inView = p => p.x > -25 && p.y > -25 && p.x < w + 25 && p.y < h + 25;
 
-  // plat lot grid
-  for (const m of this.model.maps) {
-    if (!m.transform) continue;
-    // roads
-    if (showRoads) {
-      ctx.fillStyle = 'rgba(110,101,87,0.5)';
-      ctx.font = '9px JetBrains Mono, monospace';
-      for (const r of (m.roads || [])) {
-        const wpt = CS.applyT(m.transform, r.x, r.y);
-        const p = this.worldToScreen(wpt.e, wpt.n);
-        if (p.x < -20 || p.y < -20 || p.x > w + 20 || p.y > h + 20) continue;
-        ctx.fillText('· road ·', p.x - 16, p.y);
-      }
-    }
-    if (showLots) {
+  // lot grid
+  if (s > 0.55 && L.lots.length) {
+    const showNums = s > 3.4;
+    ctx.font = '9px JetBrains Mono, monospace';
+    for (const pt of L.lots) {
+      const p = this.llToScreen(pt.lat, pt.lng);
+      if (!inView(p)) continue;
       ctx.fillStyle = 'rgba(148,138,118,0.75)';
-      for (const en of m.entries) {
-        const wpt = CS.applyT(m.transform, en[2], en[3]);
-        const p = this.worldToScreen(wpt.e, wpt.n);
-        if (p.x < -10 || p.y < -10 || p.x > w + 10 || p.y > h + 10) continue;
-        ctx.fillRect(p.x - 1.2, p.y - 1.2, 2.4, 2.4);
-        if (showLotNums) {
-          ctx.fillStyle = 'rgba(80,72,58,0.85)';
-          ctx.font = '9px JetBrains Mono, monospace';
-          ctx.fillText(String(en[1]), p.x + 3, p.y + 3);
-          ctx.fillStyle = 'rgba(148,138,118,0.75)';
-        }
-      }
-    }
-    if (showBlocks) {
-      ctx.fillStyle = 'rgba(74,93,58,0.8)';
-      ctx.font = 'bold ' + Math.min(15, Math.max(10, s * 4)) + 'px JetBrains Mono, monospace';
-      for (const b of (m.blocks || [])) {
-        const wpt = CS.applyT(m.transform, b.x, b.y);
-        const p = this.worldToScreen(wpt.e, wpt.n);
-        if (p.x < -20 || p.y < -20 || p.x > w + 20 || p.y > h + 20) continue;
-        ctx.fillText(b.b, p.x, p.y);
+      ctx.fillRect(p.x - 1.2, p.y - 1.2, 2.4, 2.4);
+      if (showNums && pt.label) {
+        ctx.fillStyle = 'rgba(80,72,58,0.85)';
+        ctx.fillText(pt.label, p.x + 3, p.y + 3);
       }
     }
   }
-
+  // roads
+  if (s > 0.7) {
+    ctx.fillStyle = 'rgba(110,101,87,0.5)';
+    ctx.font = '9px JetBrains Mono, monospace';
+    for (const pt of L.roads) {
+      const p = this.llToScreen(pt.lat, pt.lng);
+      if (inView(p)) ctx.fillText('· road ·', p.x - 16, p.y);
+    }
+  }
+  // block letters
+  if (s > 0.8) {
+    ctx.fillStyle = 'rgba(74,93,58,0.8)';
+    ctx.font = 'bold ' + Math.min(15, Math.max(10, s * 4)) + 'px JetBrains Mono, monospace';
+    for (const pt of L.blocks) {
+      const p = this.llToScreen(pt.lat, pt.lng);
+      if (inView(p)) ctx.fillText(pt.label, p.x, p.y);
+    }
+  }
   // section names
   ctx.font = 'italic 600 ' + Math.min(17, Math.max(11, s * 9)) + 'px Cormorant Garamond, serif';
-  for (const [name, sec] of Object.entries(this.model.sections || {})) {
-    const p = this.llToScreen(sec.lat, sec.lng);
-    if (p.x < -80 || p.y < -20 || p.x > w + 80 || p.y > h + 20) continue;
-    ctx.fillStyle = 'rgba(44,58,36,0.55)';
-    const tw = ctx.measureText(name).width;
-    ctx.fillText(name, p.x - tw / 2, p.y);
+  ctx.fillStyle = 'rgba(44,58,36,0.55)';
+  if (s > 0.5) {
+    for (const pt of L.sections) {
+      const p = this.llToScreen(pt.lat, pt.lng);
+      if (!inView(p)) continue;
+      const tw = ctx.measureText(pt.label).width;
+      ctx.fillText(pt.label, p.x - tw / 2, p.y);
+    }
+  }
+  // cemetery names (visible when zoomed out)
+  ctx.font = 'italic 700 15px Cormorant Garamond, serif';
+  ctx.fillStyle = 'rgba(20,24,15,0.8)';
+  for (const pt of L.cems) {
+    const p = this.llToScreen(pt.lat, pt.lng);
+    if (p.x < -150 || p.y < -30 || p.x > w + 150 || p.y > h + 30) continue;
+    const tw = ctx.measureText(pt.label).width;
+    ctx.fillText(pt.label, p.x - tw / 2, p.y - 10);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 2.6, 0, Math.PI * 2);
+    ctx.fill();
   }
 
-  // highlight ring (guide target)
+  // highlight ring
   if (this.highlight) {
     const p = this.llToScreen(this.highlight.lat, this.highlight.lng);
     const rpx = Math.max(10, (this.highlight.acc || 10) * s);
@@ -150,9 +164,9 @@ MapView.prototype.draw = function () {
   }
 
   // targets
-  for (const t of this.targets) {
+  for (const t of L.targets) {
     const p = this.llToScreen(t.lat, t.lng);
-    if (p.x < -14 || p.y < -14 || p.x > w + 14 || p.y > h + 14) continue;
+    if (!inView(p)) continue;
     const r = t.r || 5.5;
     ctx.beginPath();
     ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
@@ -190,15 +204,17 @@ MapView.prototype.draw = function () {
   ctx.fillStyle = 'rgba(20,24,15,0.75)';
   ctx.font = 'bold 12px JetBrains Mono, monospace';
   ctx.fillText('N ↑', 10, 20);
-  const barM = s > 4 ? 10 : s > 1.2 ? 50 : 100;
-  const barPx = barM * s;
+  const target = 90 / s; // aim for a bar ~90 px
+  const steps = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
+  const barM = steps.find(x => x >= target) || 10000;
   ctx.strokeStyle = 'rgba(20,24,15,0.75)';
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(10, h - 14); ctx.lineTo(10 + barPx, h - 14);
+  ctx.moveTo(10, h - 14);
+  ctx.lineTo(10 + barM * s, h - 14);
   ctx.stroke();
   ctx.font = '10px JetBrains Mono, monospace';
-  ctx.fillText(barM + ' m', 12, h - 20);
+  ctx.fillText(barM >= 1000 ? (barM / 1000 + ' km') : (barM + ' m'), 12, h - 20);
 };
 
 /* ---------------- interaction ---------------- */
@@ -217,7 +233,6 @@ MapView.prototype._bindings = function () {
     const cur = { x: ev.clientX, y: ev.clientY, sx: prev.sx, sy: prev.sy };
     if (this._pointers.size === 1) {
       const dx = cur.x - prev.x, dy = cur.y - prev.y;
-      // cumulative displacement from the press point decides tap vs drag
       if (Math.hypot(cur.x - prev.sx, cur.y - prev.sy) > 6) moved = true;
       this.cx -= dx / this.scale;
       this.cy += dy / this.scale;
@@ -256,7 +271,7 @@ MapView.prototype._bindings = function () {
 
 MapView.prototype.zoomAt = function (px, py, factor) {
   const before = this.screenToWorld(px, py);
-  this.scale = Math.min(60, Math.max(0.2, this.scale * factor));
+  this.scale = Math.min(60, Math.max(MIN_SCALE, this.scale * factor));
   const after = this.screenToWorld(px, py);
   this.cx += before.e - after.e;
   this.cy += before.n - after.n;
@@ -265,7 +280,7 @@ MapView.prototype.zoomAt = function (px, py, factor) {
 
 MapView.prototype.hitTest = function (x, y, radius) {
   let best = null, bestD = radius || 18;
-  for (const t of this.targets) {
+  for (const t of this.layers.targets) {
     const p = this.llToScreen(t.lat, t.lng);
     const d = Math.hypot(p.x - x, p.y - y);
     if (d < bestD) { bestD = d; best = t; }

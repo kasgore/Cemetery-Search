@@ -1,56 +1,48 @@
 # Cemetery Search — Grave Finder
 
-A field app for fulfilling Find a Grave photo requests at **Oak Grove Cemetery, St. Louis, Michigan** — built to actually locate the graves, not just list them.
+A field app for fulfilling Find a Grave photo requests at **38 cemeteries around St. Louis, Michigan** — built to actually locate the graves, not just list them, and to keep itself up to date automatically.
 
-**Use it here: https://kasgore.github.io/Cemetery-Search/** (install to your phone's home screen for offline use — see the app's Data tab).
+**Two ways to run it:**
+- **Self-hosted (recommended):** the Flask container in `docker/` serves the app *and refreshes all data on a schedule* — photo requests every 6 h, memorial indexes weekly, cemetery discovery daily (a new request anywhere nearby auto-adds that cemetery), municipal burial registers every ~60 days. See `docker/README.md` for the Portainer stack.
+- **Static:** GitHub Pages (https://kasgore.github.io/Cemetery-Search/) serves the last committed dataset; refresh via the in-app bookmarklets/imports.
 
 ## What it does
 
-- **Predicts a GPS position for nearly every grave** by combining three data sources:
-  1. the **city's official plat maps** (23 vector PDFs from stlouismi.com, one per section) — every lot-number label was extracted with its map position;
-  2. **630 GPS-tagged memorials** on Find a Grave, used to georeference each plat map with a RANSAC-fitted affine transform (typical accuracy: 3–8 m, i.e. within a stone or two);
-  3. the **city's public burial register** (BS&A Online) — supplies Section/Block/Lot/Grave for people whose Find a Grave memorial has no plot info at all.
-- **Walking list** grouped by section in walking order, with per-grave status (photographed / no stone / not found), notes, and requester hints.
-- **Guide mode**: live compass arrow + distance to the predicted spot (declination-corrected), with an accuracy circle so you know when to stop walking and start reading stones.
-- **Neighbors list** for every target: who's buried in the same and adjacent lots, flagging stones already photographed on Find a Grave (📷) — walk to a photographed neighbor, then count stones. Spouses are very often in the same lot even when unmarked.
-- **Offline map** of the whole cemetery rendered from the extracted plat geometry: lot grid, block letters, section names, targets, and your live position.
-- **Search all ~7,600 burials offline** — memorials and the city register, cross-matched by name/dates (with nickname and spelling tolerance).
-- **PWA**: installs to the home screen, works fully offline (the cemetery may have weak signal). Progress auto-saves locally; export/import backups from the Data tab.
+- **Locates graves by the best available evidence**, per request:
+  1. the memorial's own GPS pin;
+  2. **lot positions from georeferenced city plat maps** (Oak Grove: 23 vector PDFs from the city, fitted with RANSAC against 450+ GPS-tagged memorials — 3–8 m typical);
+  3. **GPS-anchor clustering**: any cemetery's GPS-tagged memorials, grouped by parsed plot (same lot → ~2–6 m; adjacent lot, block, section fall-backs);
+  4. **municipal burial registers** (BS&A Online: Oak Grove/St. Louis uid 2024, Riverside/Alma uid 1205) supply Section/Block/Lot for requests Find a Grave has no plot for, matched by name+dates with nickname/spelling tolerance;
+  5. **family leads** when nothing else exists: same-surname burials with locatable graves (spouses usually share the lot).
+- **Walking list** across all cemeteries (nearest first, drive links) or per cemetery grouped by section, with per-grave status (photographed / no stone / not found), notes, requester hints, and **neighbor packs** (adjacent burials, 📷 = photographed stone to use as a visual anchor).
+- **Guide mode**: declination-corrected compass arrow + live distance + honest accuracy circle; offline canvas map (lot grids, block letters, sections, your blue dot).
+- **Offline search of ~75,000 burials** — memorials + registers, cross-matched.
+- **PWA**: installs to the home screen, fully offline in the field (HTTPS required for GPS/compass — see docker/README.md).
 
-## Files
+## Architecture
 
-| File | Purpose |
+| Piece | Purpose |
 | --- | --- |
-| `index.html` | app shell + styles |
-| `app-core.js` | data model, plot parsers, matching, geometry engine (no DOM — unit-testable) |
-| `app-map.js` | canvas map renderer (map tab + guide minimap) |
-| `app-ui.js` | UI, sensors (GPS/compass/wake-lock), imports, storage |
-| `oakgrove-data.js` | baked dataset: photo requests, memorial index, burial register, georeferenced plat geometry |
+| `index.html`, `app-core.js`, `app-map.js`, `app-ui.js` | the app (core is DOM-free and unit-tested) |
+| `cemetery-data.js` | generated dataset: all cemeteries' requests, memorial indexes, registers, plat geometry |
+| `server/` | **Flask + refresher**: discovery, pulls, register scrapes, dataset builds (`app.py`, `refresher.py`) |
+| `server/geometry/oakgrove.json` | static georeferenced plat geometry (from `tools/`) |
+| `docker/` | Portainer stack (Dockerfile + compose) |
+| `tools/` | one-time pipeline: plat-PDF extraction, RANSAC georeferencing, test suite |
 | `sw.js`, `manifest.webmanifest`, `icons/` | PWA/offline |
-| `cemetery-search.html` | old entry point → redirects to `index.html` |
-| `tools/` | the data pipeline (below) |
 
-## Refreshing data
+Refresher config lives in `server/refresher.py` (`DEFAULT_CONFIG`) or a `server/config.json` override: home point, radius (default 15 mi), counties scanned, pinned cemeteries, BS&A registers.
 
-Photo requests change often — refresh them **from inside the app** (Data tab): drop Find a Grave's official *Download List* file, or use the one-tap bookmarklet. Memorial-index refreshes (new GPS pins improve map accuracy) also have a bookmarklet. No rebuild needed.
-
-To rebuild the baked dataset from scratch (`tools/`, run with Node 18+):
+## Tests
 
 ```
-node tools/pull-memorials.js     # Find a Grave memorial index (paced, ~4 min)
-node tools/pull-bsa.js           # city burial register from BS&A (paced, ~3 h, resumable)
-node tools/extract-maps.js       # lot-label positions from the city plat PDFs (needs pdfjs-dist, maps/*.pdf)
-node tools/build-geometry.js     # georeference each plat map against GPS anchors
-node tools/build-appdata.js      # merge everything -> oakgrove-data.js
-node tools/test-core.js          # test suite (run from a dir containing photo-requests.json)
+node tools/test-core.js     # 109 unit/integration tests (run from a dir containing photo-requests.json)
 ```
 
-Plat PDFs: https://www.stlouismi.com/government/city-clerk/cemetery/ · City Clerk: Jamie Long, (989) 681-2137 ext. 1050, jlong@stlouismi.com.
+plus a jsdom UI harness (boot, walk, guide, imports) used during development.
 
-## Accuracy notes
+## Data notes
 
-- Positions are **predictions**: lot-level ±4–12 m for well-anchored sections (Square Hill, Round Hill, both North Hills, Hoffstetter, Old Part subs 2–4), wider for sections with few GPS anchors (Vault Hill, Veterans Hill, Oak Hill, Single Grave). The app shows the level and radius on every card.
-- Grave-within-lot position (which corner is grave 1) is not derivable from public data — the clerk can confirm the convention. Stakes are one stone-width (~1 m).
-- Find a Grave GPS pins are volunteer-submitted; ~10 % are junk (pinned off-site) and are filtered before use.
-
-Other cemeteries: the app degrades gracefully without `oakgrove-data.js` — paste any photo-request export and burial roster via the Data tab (matching + walking list still work; the plat map layer is Oak Grove-specific).
+- Find a Grave data comes from the same JSON endpoints the site's own pages use, pulled politely (paced, one-time per cadence) for personal volunteer use; per-request refreshes use FAG's official Download List export or same-origin bookmarklets.
+- BS&A registers are public municipal records (sessionless deep links). Ithaca, the Gratiot townships, Coe/Pine River (Ridgelawn, Salt River) have **no** public BS&A cemetery module — checked exhaustively.
+- Oak Grove specifics: city plat maps at stlouismi.com; section-code table (13 = Cutler Hill!); code 25 = unknown-plot bucket. City Clerk: Jamie Long, (989) 681-2137 ext. 1050.

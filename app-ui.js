@@ -1,5 +1,6 @@
 /* ==========================================================
    Cemetery Search — UI layer (DOM, sensors, storage).
+   Multi-cemetery: window.CEMDATA (v2) with legacy OAKGROVE fallback.
    ========================================================== */
 (function () {
 'use strict';
@@ -17,7 +18,6 @@ try {
     if (parsed && typeof parsed === 'object') {
       store.progress = (parsed.progress && typeof parsed.progress === 'object') ? parsed.progress : {};
       store.prefs = (parsed.prefs && typeof parsed.prefs === 'object') ? parsed.prefs : {};
-      if (parsed.updates && typeof parsed.updates === 'object') store.updates = parsed.updates; // legacy combined key
     }
   }
 } catch (e) { /* ignore */ }
@@ -31,7 +31,6 @@ try {
 
 let saveTimer = null;
 function writeProgress() {
-  // progress is written on its own key so bulky updates can never block it
   localStorage.setItem(STORE_KEY, JSON.stringify({ progress: store.progress, prefs: store.prefs }));
 }
 function save() {
@@ -48,34 +47,76 @@ function saveUpdates() {
   try { writeProgress(); } catch (e) { /* progress first, always */ }
   try { localStorage.setItem(UPDATES_KEY, JSON.stringify(store.updates)); }
   catch (e) {
-    // storage full: drop the bulkiest re-downloadable piece and retry
-    const u = Object.assign({}, store.updates);
-    delete u.memorials; delete u.memorialsAsOf;
+    // storage full: drop the bulkiest re-downloadable pieces and retry
+    const slim = {};
+    for (const [cid, u] of Object.entries(store.updates)) {
+      slim[cid] = Object.assign({}, u);
+      delete slim[cid].memorials; delete slim[cid].memorialsAsOf;
+    }
     try {
-      localStorage.setItem(UPDATES_KEY, JSON.stringify(u));
-      store.updates = u;
-      toast('⚠ Storage full — memorial update not kept (re-run the bookmarklet anytime)');
+      localStorage.setItem(UPDATES_KEY, JSON.stringify(slim));
+      store.updates = slim;
+      toast('⚠ Storage full — memorial updates not kept (they re-download automatically)');
     } catch (e2) { toast('⚠ Storage full — dataset update could not be saved'); }
   }
 }
 window.addEventListener('pagehide', flushSave);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(); });
 
-/* ---------------- model ---------------- */
-const DATA = (typeof window !== 'undefined' && window.OAKGROVE) || {
-  meta: { cemetery: 'No dataset loaded', cem: { lat: 43.4202995, lng: -84.6136017 }, declination: -6.6, asOf: '', counts: {} },
-  sections: {}, maps: [], requests: [], memorials: [], roster: [],
-};
-let model;
-try {
-  model = CS.buildModel(DATA, store.updates);
-} catch (e) {
-  // poisoned updates must never brick the app — fall back to baked data, keep progress
-  console.error('buildModel failed with stored updates:', e);
-  store.updates = {};
-  try { localStorage.removeItem(UPDATES_KEY); } catch (e2) {}
-  model = CS.buildModel(DATA, {});
-  setTimeout(() => toast('⚠ A stored dataset update was corrupt and has been discarded (progress kept)'), 600);
+/* ---------------- dataset + models ---------------- */
+const DS = CS.normalizeDataset(window.CEMDATA || window.OAKGROVE || null);
+const gproj = CS.makeProj(DS.home);
+const cemById = new Map(DS.cemeteries.map(c => [String(c.id), c]));
+
+// migrate legacy single-cemetery updates shape — the legacy app was Oak Grove (1252)
+// only; if the dataset failed to load, leave the stored shape untouched for next boot
+if (store.updates && (store.updates.requests || store.updates.memorials || store.updates.roster)) {
+  if (cemById.has('1252')) {
+    store.updates = { '1252': store.updates };
+    saveUpdates();
+  } else if (DS.cemeteries.length) {
+    store.updates = { [String(DS.cemeteries[0].id)]: store.updates };
+    saveUpdates();
+  }
+}
+
+const models = new Map();
+function getModel(cemId) {
+  cemId = String(cemId);
+  if (models.has(cemId)) return models.get(cemId);
+  const cem = cemById.get(cemId);
+  if (!cem) return null;
+  let model;
+  try {
+    model = CS.buildModel(cem.data, store.updates[cemId] || {});
+  } catch (e) {
+    console.error('buildModel failed for', cem.name, e);
+    delete store.updates[cemId];
+    saveUpdates();
+    try { model = CS.buildModel(cem.data, {}); }
+    catch (e2) { return null; }
+    setTimeout(() => toast('⚠ A stored update for ' + cem.name + ' was corrupt and was discarded'), 400);
+  }
+  model.cem = cem;
+  models.set(cemId, model);
+  return model;
+}
+function builtModels() { return [...models.values()]; }
+function ensureAllModels() { for (const c of DS.cemeteries) getModel(c.id); return builtModels(); }
+
+// idle prebuild so search/map are instant by the time they're used
+(function idleBuild(i) {
+  if (i >= DS.cemeteries.length) { updateStats(); return; }
+  setTimeout(() => { getModel(DS.cemeteries[i].id); idleBuild(i + 1); }, 30);
+})(0);
+
+function activeCem() {
+  const v = store.prefs.activeCem;
+  return (v && v !== 'all' && cemById.has(String(v))) ? String(v) : 'all';
+}
+function activeCemList() {
+  const a = activeCem();
+  return a === 'all' ? DS.cemeteries.map(c => String(c.id)) : [a];
 }
 
 function progressOf(pk) { return store.progress[pk] || {}; }
@@ -112,7 +153,7 @@ const geo = {
       e => {
         this.err = e;
         gpsChip();
-        if (location.protocol === 'file:') toast('GPS needs HTTPS — use the github.io address or installed app.');
+        if (location.protocol === 'file:') toast('GPS needs HTTPS — use the hosted address or installed app.');
         else if (e.code === 1) toast('GPS permission denied. Allow location for this site.');
       },
       { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 }
@@ -135,8 +176,7 @@ function gpsChip() {
 
 /* ---------------- compass ---------------- */
 const compass = {
-  heading: null, // true-north heading in degrees, smoothed
-  raw: null, active: false, listeners: new Set(),
+  heading: null, raw: null, active: false, declination: -6.6, listeners: new Set(),
   async enable() {
     if (this.active) return true;
     try {
@@ -151,17 +191,15 @@ const compass = {
       else if (ev.absolute === true && ev.alpha != null) h = (360 - ev.alpha) % 360;
       else if (ev.type === 'deviceorientationabsolute' && ev.alpha != null) h = (360 - ev.alpha) % 360;
       if (h == null) return;
-      // compensate for screen rotation (landscape holds the device sideways)
       const angle = (screen.orientation && typeof screen.orientation.angle === 'number')
         ? screen.orientation.angle
         : (typeof window.orientation === 'number' ? window.orientation : 0);
       h = (h + angle + 360) % 360;
-      // magnetic -> true north (declination is negative-west, so adding it subtracts west declination)
-      h = (h + (model.meta.declination || 0) + 360) % 360;
+      h = (h + this.declination + 360) % 360; // magnetic -> true
       this.raw = h;
       if (this.heading == null) this.heading = h;
       else {
-        let d = ((h - this.heading + 540) % 360) - 180;
+        const d = ((h - this.heading + 540) % 360) - 180;
         this.heading = (this.heading + d * 0.25 + 360) % 360;
       }
       this.listeners.forEach(f => f(this.heading));
@@ -188,31 +226,75 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && $('guide').classList.contains('open')) wakeOn();
 });
 
+/* ---------------- cemetery selector ---------------- */
+function renderCemSelect() {
+  const sel = $('cem-select');
+  const cur = activeCem();
+  sel.innerHTML = '';
+  const optAll = document.createElement('option');
+  optAll.value = 'all';
+  const totalReq = DS.cemeteries.reduce((s, c) => s + requestRowsFor(c).length, 0);
+  optAll.textContent = `All nearby — ${DS.cemeteries.length} cemeteries, ${totalReq} requests`;
+  sel.appendChild(optAll);
+  for (const c of DS.cemeteries) {
+    const o = document.createElement('option');
+    o.value = String(c.id);
+    o.textContent = `${c.name} — ${requestRowsFor(c).length} req${c.miles != null ? ' · ' + c.miles + ' mi' : ''}`;
+    sel.appendChild(o);
+  }
+  sel.value = cur;
+}
+document.addEventListener('change', ev => {
+  if (ev.target && ev.target.id === 'cem-select') {
+    store.prefs.activeCem = ev.target.value;
+    save();
+    renderWalk();
+    if ($('panel-map').classList.contains('active')) { refreshMapLayers(); fitMap(); }
+  }
+});
+
 /* ---------------- tabs ---------------- */
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + name));
   if (name === 'walk') renderWalk();
-  if (name === 'map') { ensureMap(); mainMap.resize(); refreshMapTargets(); }
+  if (name === 'map') { ensureMap(); mainMap.resize(); refreshMapLayers(); fitMap(); }
   if (name === 'data') renderDataInfo();
 }
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
 
 /* ---------------- stats ---------------- */
+// effective request rows for a cemetery, honoring manual snapshot updates
+function requestRowsFor(c) {
+  const u = store.updates[String(c.id)];
+  return (u && Array.isArray(u.requests)) ? u.requests : c.data.requests;
+}
 function updateStats() {
-  const reqs = model.requests;
-  let done = 0;
-  for (const r of reqs) { const st = progressOf(r.mid).st; if (st === 'done' || st === 'nostone' || st === 'notfound') done++; }
-  $('stat-open').textContent = reqs.length - done;
+  let open = 0, done = 0;
+  for (const c of DS.cemeteries) {
+    for (const r of requestRowsFor(c)) {
+      const st = progressOf(r.mid).st;
+      if (st === 'done' || st === 'nostone' || st === 'notfound') done++;
+      else open++;
+    }
+  }
+  $('stat-open').textContent = open;
   $('stat-done').textContent = done;
 }
 
 /* ---------------- walking list ---------------- */
-const SECTION_ORDER = ['Vault Hill', 'Round Hill', 'Old Part', 'Square Hill', 'Hofstetter Hill', 'Cutler Hill',
+const OAKGROVE_SECTION_ORDER = ['Vault Hill', 'Round Hill', 'Old Part', 'Square Hill', 'Hofstetter Hill', 'Cutler Hill',
   'Oak Hill', 'Mausoleum', 'Single Grave', 'North Hill', 'Veteran Hill', 'Morris Hill'];
 
-function locChip(req) {
-  if (!req.loc) return '<span class="loc-chip"><span class="dot q-none"></span>no location — use neighbors/search</span>';
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+const normFilter = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+function locChip(req, model) {
+  if (!req.loc) {
+    const interments = model && model.cem && model.cem.data.meta ? (model.cem.data.memorials.length || 0) : 0;
+    const small = interments > 0 && interments <= 400;
+    return `<span class="loc-chip"><span class="dot q-none"></span>${small ? 'no plot — small cemetery, walkable in full' : 'no location — tap Neighbors for family leads'}</span>`;
+  }
   const l = req.loc;
   const q = l.level === 'gps' || l.level === 'lot' ? 'q-lot' : (l.level === 'adjacent' || l.level === 'block') ? 'q-block' : 'q-section';
   const lbl = { gps: 'GPS pin', lot: 'lot position', adjacent: 'near lot', block: 'block area', section: 'section only' }[l.level] || l.level;
@@ -220,45 +302,21 @@ function locChip(req) {
 }
 function plotLine(req) {
   const bits = [];
-  if (req.pFag) bits.push(esc(req.plot));
-  else if (req.plot && !/no location/i.test(req.plot)) bits.push(esc(req.plot));
+  if (req.plot && !/no location/i.test(req.plot)) bits.push(esc(req.plot));
   if (req.pRos && (!req.pFag || req.plotConflict)) {
     const r = req.pRos;
+    const secTxt = r.section === '*' ? '' : r.section + (r.sub ? ' Sub ' + r.sub : '');
     bits.push('<span class="badge sky" title="from city burial register">register</span> ' +
-      esc([r.section + (r.sub ? ' Sub ' + r.sub : ''), r.block && 'Blk ' + r.block, r.lot && 'Lot ' + r.lot, r.grave && 'Grave ' + r.grave].filter(Boolean).join(' ')));
+      esc([secTxt, r.block && 'Blk ' + r.block, r.lot && 'Lot ' + r.lot, r.grave && 'Grave ' + r.grave].filter(Boolean).join(' ')));
   }
   return bits.join(' &nbsp;·&nbsp; ');
 }
-function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
-const normFilter = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-function renderWalk() {
-  const wrap = $('walk-list');
-  const filter = normFilter($('walk-filter').value);
-  const sort = $('walk-sort').value;
-  const hideDone = $('walk-hidedone').checked;
-
-  let items = model.requests.slice();
-  if (filter) {
-    const terms = filter.split(' ');
-    items = items.filter(r => {
-      const hay = normFilter(r.name + ' ' + r.plot + ' ' + (r.pRos ? r.pRos.section + ' ' + r.pRos.block + ' ' + r.pRos.lot : ''));
-      return terms.every(t => hay.includes(t));
-    });
-  }
-  if (hideDone) items = items.filter(r => !['done', 'nostone', 'notfound'].includes(progressOf(r.mid).st || ''));
-
-  if (!items.length) {
-    wrap.innerHTML = `<div class="empty-state"><div class="ornament">❧</div>${model.requests.length ? 'All caught up — nothing left to walk.' : 'No photo requests loaded. See the Data tab.'}</div>`;
-    updateStats();
-    return;
-  }
-
+function sortRequests(items, sort) {
   const lotOf = r => { const n = parseInt(r.pBest && r.pBest.lot); return isFinite(n) ? n : 9999; };
   const blockOf = r => (r.pBest && r.pBest.block) || '';
-  if (sort === 'name') {
-    items.sort((a, b) => CS.normName(a.ln).localeCompare(CS.normName(b.ln)));
-  } else if (sort === 'conf') {
+  if (sort === 'name') items.sort((a, b) => CS.normName(a.ln).localeCompare(CS.normName(b.ln)));
+  else if (sort === 'conf') {
     const rank = { gps: 0, lot: 1, adjacent: 2, block: 3, section: 4 };
     items.sort((a, b) => (a.loc ? rank[a.loc.level] : 9) - (b.loc ? rank[b.loc.level] : 9));
   } else if (sort === 'near' && geo.pos) {
@@ -269,37 +327,107 @@ function renderWalk() {
     });
   } else {
     items.sort((a, b) => {
-      const sa = SECTION_ORDER.indexOf((a.pBest || {}).section), sb = SECTION_ORDER.indexOf((b.pBest || {}).section);
-      if (sa !== sb) return (sa === -1 ? 99 : sa) - (sb === -1 ? 99 : sb);
+      const sa = (a.pBest || {}).section || '~', sb = (b.pBest || {}).section || '~';
+      if (sa !== sb) {
+        const oa = OAKGROVE_SECTION_ORDER.indexOf(sa), ob = OAKGROVE_SECTION_ORDER.indexOf(sb);
+        if (oa !== -1 || ob !== -1) return (oa === -1 ? 99 : oa) - (ob === -1 ? 99 : ob);
+        return sa.localeCompare(sb, undefined, { numeric: true });
+      }
       const ba = blockOf(a), bb = blockOf(b);
       if (ba !== bb) return ba.localeCompare(bb, undefined, { numeric: true });
       return lotOf(a) - lotOf(b);
     });
   }
-
-  wrap.innerHTML = '';
-  if (sort === 'route') {
-    const groups = new Map();
-    for (const r of items) {
-      const key = (r.pBest && r.pBest.section) ? (r.pBest.section + (r.pBest.section === 'Old Part' && r.pBest.sub ? ' — Sub ' + r.pBest.sub : '')) : 'Location unknown';
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(r);
-    }
-    for (const [name, list] of groups) {
-      const div = document.createElement('div');
-      div.className = 'section-group';
-      const doneCount = list.filter(r => ['done', 'nostone', 'notfound'].includes(progressOf(r.mid).st || '')).length;
-      div.innerHTML = `<div class="section-header"><h2>${esc(name)}</h2><span class="meta">${list.length - doneCount} open · ${list.length} total</span></div>`;
-      for (const r of list) div.appendChild(requestCard(r));
-      wrap.appendChild(div);
-    }
-  } else {
-    for (const r of items) wrap.appendChild(requestCard(r));
-  }
-  updateStats();
+  return items;
 }
 
-function requestCard(req) {
+function filteredRequests(model, filter, hideDone) {
+  let items = model.requests.slice();
+  if (filter) {
+    const terms = filter.split(' ');
+    items = items.filter(r => {
+      const hay = normFilter(r.name + ' ' + r.plot + ' ' + (r.pRos ? r.pRos.section + ' ' + r.pRos.block + ' ' + r.pRos.lot : ''));
+      return terms.every(t => hay.includes(t));
+    });
+  }
+  if (hideDone) items = items.filter(r => !['done', 'nostone', 'notfound'].includes(progressOf(r.mid).st || ''));
+  return items;
+}
+
+function sectionGroupsFor(model, items) {
+  const groups = new Map();
+  for (const r of items) {
+    let key = 'Location unknown';
+    if (r.pBest && r.pBest.section) {
+      key = r.pBest.section === '*' ? 'All plots'
+        : (r.pBest.section + (r.pBest.section === 'Old Part' && r.pBest.sub ? ' — Sub ' + r.pBest.sub : ''));
+    }
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+  return groups;
+}
+
+let walkRenderToken = 0;
+function renderWalk() {
+  const wrap = $('walk-list');
+  const filter = normFilter($('walk-filter').value);
+  const sort = $('walk-sort').value;
+  const hideDone = $('walk-hidedone').checked;
+  const token = ++walkRenderToken;
+  wrap.innerHTML = '';
+
+  const cems = activeCemList()
+    .map(id => cemById.get(id))
+    .sort((a, b) => (a.miles || 0) - (b.miles || 0));
+
+  let any = false;
+  const renderCem = idx => {
+    if (token !== walkRenderToken) return; // superseded render
+    if (idx >= cems.length) {
+      if (!any) {
+        wrap.innerHTML = `<div class="empty-state"><div class="ornament">❧</div>${DS.cemeteries.length ? 'Nothing matches — or all caught up.' : 'No dataset loaded. See the Data tab.'}</div>`;
+      }
+      updateStats();
+      return;
+    }
+    const cem = cems[idx];
+    const model = getModel(cem.id);
+    if (model) {
+      let items = sortRequests(filteredRequests(model, filter, hideDone), sort);
+      if (items.length) {
+        any = true;
+        if (activeCem() === 'all') {
+          const openCount = filteredRequests(model, '', true).length;
+          const cc = model.meta.cem;
+          const head = document.createElement('div');
+          head.className = 'section-header';
+          head.style.background = 'var(--ink)';
+          head.innerHTML = `<h2>${esc(cem.name)}</h2>
+            <a href="https://maps.google.com/?daddr=${cc.lat},${cc.lng}" target="_blank" rel="noopener" title="Drive there" style="color:var(--bg-deep); text-decoration:none; font-size:0.95rem;">🚗</a>
+            <span class="meta">${cem.miles != null ? cem.miles + ' mi · ' : ''}${openCount} open</span>`;
+          wrap.appendChild(head);
+          for (const r of items) wrap.appendChild(requestCard(r, model));
+        } else if (sort === 'route') {
+          for (const [name, list] of sectionGroupsFor(model, items)) {
+            const div = document.createElement('div');
+            div.className = 'section-group';
+            const doneCount = list.filter(r => ['done', 'nostone', 'notfound'].includes(progressOf(r.mid).st || '')).length;
+            div.innerHTML = `<div class="section-header"><h2>${esc(name)}</h2><span class="meta">${list.length - doneCount} open · ${list.length} total</span></div>`;
+            for (const r of list) div.appendChild(requestCard(r, model));
+            wrap.appendChild(div);
+          }
+        } else {
+          for (const r of items) wrap.appendChild(requestCard(r, model));
+        }
+      }
+    }
+    setTimeout(() => renderCem(idx + 1), 0); // progressive render, nearest first
+  };
+  renderCem(0);
+}
+
+function requestCard(req, model) {
   const card = document.createElement('div');
   const st = progressOf(req.mid).st || '';
   card.className = 'tcard' + (st ? ' st-' + st : '');
@@ -312,7 +440,7 @@ function requestCard(req) {
       ${req.plotConflict ? '<span class="badge rust" title="Find a Grave and city register disagree — verify">verify plot</span>' : ''}
     </div>
     <div class="tmeta">${plotLine(req) || '<span class="lbl">plot</span>—'}</div>
-    <div>${locChip(req)}${distTxt ? ` <span class="mono small">· ${distTxt}</span>` : ''}${note ? ' <span title="has field note">📝</span>' : ''}</div>
+    <div>${locChip(req, model)}${distTxt ? ` <span class="mono small">· ${distTxt}</span>` : ''}${note ? ' <span title="has field note">📝</span>' : ''}</div>
     ${req.notes ? `<div class="reqnote">“${esc(String(req.notes).replace(/<br\s*\/?>/gi, ' '))}” <span class="small">— requester${req.req ? ', ' + esc(req.req) : ''}</span></div>` : ''}
     <div class="trow-actions">
       <button class="mini act-guide">➤ Guide</button>
@@ -323,10 +451,10 @@ function requestCard(req) {
       <button class="mini act-notfound ${st === 'notfound' ? 'on' : ''}">Not found</button>
     </div>
     <div class="neighbors"></div>`;
-  card.querySelector('.act-guide').addEventListener('click', () => openGuide(req));
-  card.querySelector('.act-nb').addEventListener('click', ev => {
+  card.querySelector('.act-guide').addEventListener('click', () => openGuide(req, model));
+  card.querySelector('.act-nb').addEventListener('click', () => {
     const nb = card.querySelector('.neighbors');
-    if (!nb.dataset.loaded) { nb.innerHTML = neighborsHtml(req); nb.dataset.loaded = '1'; }
+    if (!nb.dataset.loaded) { nb.innerHTML = neighborsHtml(req, model); nb.dataset.loaded = '1'; }
     nb.classList.toggle('open');
   });
   const setSt = v => () => {
@@ -340,19 +468,31 @@ function requestCard(req) {
   return card;
 }
 
-function neighborsHtml(req) {
+function familyHtml(req, model) {
+  const fam = CS.familyHints(model, req, 8);
+  if (!fam.length) return '<div class="small">No plot info and no same-surname burials found here. Try Search across all cemeteries.</div>';
+  let html = '<h4>No plot on record — family leads (spouses usually share the lot):</h4>';
+  for (const f of fam) {
+    html += `<div class="nb">
+      ${f.hasPhoto ? '<span class="cam">📷</span>' : '<span class="cam" style="opacity:0.25;">·</span>'}
+      <a href="https://www.findagrave.com/memorial/${f.mid}" target="_blank" rel="noopener">${esc(f.name)}</a>
+      <span class="g">${esc(f.years)}${f.plot ? ' · ' + esc(f.plot) : ''}${f.loc ? ' · locatable ±' + Math.round(f.loc.acc) + 'm' : ''}</span>
+    </div>`;
+  }
+  return html;
+}
+function neighborsHtml(req, model) {
   const p = req.pBest;
-  if (!p || !p.section) return '<div class="small">No plot info — no neighbor list available. Try Search for family names.</div>';
+  if (!p || !p.section) return familyHtml(req, model);
   const nbs = CS.neighbors(model, p, req.mid);
-  if (!nbs.length) return '<div class="small">No known neighbors in this lot/block.</div>';
+  if (!nbs.length) return familyHtml(req, model);
   const withPhoto = nbs.filter(n => n.hasPhoto).length;
   let html = `<h4>Buried nearby — ${withPhoto} with photographed stones (📷 = visual anchor)</h4>`;
   for (const n of nbs.slice(0, 14)) {
-    const rel = n.lotDist === 0 ? 'same lot' : n.lotDist + ' lot' + (n.lotDist > 1 ? 's' : '') + ' away';
     html += `<div class="nb">
       ${n.hasPhoto ? '<span class="cam">📷</span>' : '<span class="cam" style="opacity:0.25;">·</span>'}
       ${n.mid ? `<a href="https://www.findagrave.com/memorial/${n.mid}" target="_blank" rel="noopener">${esc(n.name)}</a>` : esc(n.name)}
-      <span class="g">${esc(n.years)} · ${rel}${n.grave ? ' · gr ' + esc(n.grave) : ''}${n.fromRegister ? ' · register' : ''}</span>
+      <span class="g">${esc(n.years)} · ${esc(n.rel || 'nearby')}${n.grave ? ' · gr ' + esc(n.grave) : ''}${n.fromRegister ? ' · register' : ''}</span>
     </div>`;
   }
   return html;
@@ -360,24 +500,28 @@ function neighborsHtml(req) {
 
 /* ---------------- guide overlay ---------------- */
 let guideTarget = null;
+let guideModel = null;
 let guideMap = null;
 let arrowRAF = null;
+let lastGuideDom = { dist: null, sub: null };
+let lastMiniDraw = { lat: null, lng: null };
 
-function openGuide(target) {
-  // target: request object or {name, mid, rosKey, loc, pBest, plot}
+function openGuide(target, model) {
   guideTarget = target;
-  // progress key: memorialId when available, else a synthetic register key
+  guideModel = model || null;
   target.pk = target.mid ? String(target.mid) : (target.rosKey ? 'ros:' + target.rosKey : null);
+  compass.declination = (model && model.meta.declination != null) ? model.meta.declination : -6.6;
   $('guide-name').textContent = target.name;
   const plotBits = [];
+  if (model && model.cem) plotBits.push(model.cem.name);
   if (target.plot && !/no location/i.test(target.plot)) plotBits.push(target.plot);
-  if (target.pRos) plotBits.push('Register: ' + [target.pRos.section + (target.pRos.sub ? ' Sub ' + target.pRos.sub : ''), target.pRos.block && 'Blk ' + target.pRos.block, target.pRos.lot && 'Lot ' + target.pRos.lot, target.pRos.grave && 'Gr ' + target.pRos.grave].filter(Boolean).join(' '));
+  if (target.pRos) plotBits.push('Register: ' + [target.pRos.section === '*' ? '' : target.pRos.section + (target.pRos.sub ? ' Sub ' + target.pRos.sub : ''), target.pRos.block && 'Blk ' + target.pRos.block, target.pRos.lot && 'Lot ' + target.pRos.lot, target.pRos.grave && 'Gr ' + target.pRos.grave].filter(Boolean).join(' '));
   if (target.loc) plotBits.push('±' + Math.round(target.loc.acc) + ' m (' + target.loc.level + ')');
   $('guide-plot').textContent = plotBits.join('  ·  ') || 'no location information';
   $('guide-fag').href = target.mid ? 'https://www.findagrave.com/memorial/' + target.mid : '#';
   $('guide-fag').style.display = target.mid ? '' : 'none';
   $('guide-note').value = (target.pk && progressOf(target.pk).note) || '';
-  $('guide-neighbors').innerHTML = target.pBest ? neighborsHtml(target) : '';
+  $('guide-neighbors').innerHTML = (target.pBest && model) ? neighborsHtml(target, model) : '';
   syncGuideButtons();
 
   $('guide').classList.add('open');
@@ -387,15 +531,12 @@ function openGuide(target) {
   compass.enable();
   wakeOn();
 
-  if (!guideMap) {
-    guideMap = new MapView($('guide-minimap'), model, {});
-  }
-  guideMap.model = model;
-  guideMap.targets = target.loc ? [{ lat: target.loc.lat, lng: target.loc.lng, color: '#8b3a1f', r: 7 }] : [];
+  if (!guideMap) guideMap = new MapView($('guide-minimap'), gproj, {});
+  guideMap.layers = buildLayers(model ? [String(model.cem.id)] : activeCemList(), target);
   guideMap.highlight = target.loc ? { lat: target.loc.lat, lng: target.loc.lng, acc: target.loc.acc } : null;
   guideMap.resize();
   if (target.loc) guideMap.centerOn(target.loc.lat, target.loc.lng, 4.5);
-  else guideMap.fit();
+  else if (model) guideMap.centerOn(model.meta.cem.lat, model.meta.cem.lng, 1.2);
 
   lastGuideDom = { dist: null, sub: null };
   lastMiniDraw = { lat: null, lng: null };
@@ -441,8 +582,6 @@ $('guide-note').addEventListener('input', () => {
   if (guideTarget && guideTarget.pk) setProgress(guideTarget.pk, { note: $('guide-note').value });
 });
 
-let lastGuideDom = { dist: null, sub: null };
-let lastMiniDraw = { lat: null, lng: null };
 function drawArrow() {
   const cv = $('arrow-canvas');
   const ctx = cv.getContext('2d');
@@ -457,11 +596,8 @@ function drawArrow() {
     distTxt = d >= 1000 ? (d / 1000).toFixed(2) + '<span class="unit"> km</span>' : Math.round(d) + '<span class="unit"> m</span>';
     bearing = CS.bearingDeg(geo.pos.lat, geo.pos.lng, t.loc.lat, t.loc.lng);
     const head = compass.best();
-    if (head) {
-      sub = `bearing ${Math.round(bearing)}° · heading ${Math.round(head.h)}° (${head.src}) · GPS ±${Math.round(geo.pos.acc)} m`;
-    } else {
-      sub = `bearing ${Math.round(bearing)}° ${compassPoint(bearing)} · face north & follow · GPS ±${Math.round(geo.pos.acc)} m`;
-    }
+    if (head) sub = `bearing ${Math.round(bearing)}° · heading ${Math.round(head.h)}° (${head.src}) · GPS ±${Math.round(geo.pos.acc)} m`;
+    else sub = `bearing ${Math.round(bearing)}° ${compassPoint(bearing)} · face north & follow · GPS ±${Math.round(geo.pos.acc)} m`;
     if (d <= Math.max(8, t.loc.acc)) sub = `you're within the search circle (±${Math.round(t.loc.acc)} m) — read the stones · ` + sub;
   } else if (!geo.pos) {
     sub = geo.watchId == null ? 'tap the GPS chip (top right) to start' : 'waiting for GPS fix…';
@@ -471,19 +607,16 @@ function drawArrow() {
   if (distTxt !== lastGuideDom.dist) { $('guide-dist').innerHTML = distTxt; lastGuideDom.dist = distTxt; }
   if (sub !== lastGuideDom.sub) { $('guide-sub').textContent = sub; lastGuideDom.sub = sub; }
 
-  // arrow: rotation = bearing - heading (fallback: north-up bearing)
   const head = compass.best();
   const rot = bearing == null ? null : ((bearing - (head ? head.h : 0)) * Math.PI / 180);
 
   ctx.save();
   ctx.translate(cx, cy);
-  // ring
   ctx.beginPath();
   ctx.arc(0, 0, 150, 0, Math.PI * 2);
   ctx.strokeStyle = 'rgba(110,101,87,0.45)';
   ctx.lineWidth = 3;
   ctx.stroke();
-  // tick for north (rotates opposite heading when compass active)
   const northRot = head ? (-head.h * Math.PI / 180) : 0;
   ctx.save();
   ctx.rotate(northRot);
@@ -510,7 +643,6 @@ function drawArrow() {
   }
   ctx.restore();
 
-  // update minimap user dot — only when the position actually changed (not every frame)
   if (guideMap && geo.pos && (geo.pos.lat !== lastMiniDraw.lat || geo.pos.lng !== lastMiniDraw.lng)) {
     lastMiniDraw = { lat: geo.pos.lat, lng: geo.pos.lng };
     guideMap.user = geo.pos;
@@ -521,44 +653,107 @@ function compassPoint(b) {
   return ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'][Math.round(b / 22.5) % 16];
 }
 
+/* ---------------- map layers ---------------- */
+function modelLayerCache(model) {
+  if (model._layerCache) return model._layerCache;
+  const lots = [], blocks = [], roads = [];
+  for (const m of model.maps) {
+    if (!m.transform) continue;
+    for (const en of m.entries) {
+      const w = CS.applyT(m.transform, en[2], en[3]);
+      const ll = model.proj.toLL(w.e, w.n);
+      if (isFinite(ll.lat)) lots.push({ lat: ll.lat, lng: ll.lng, label: String(en[1]) });
+    }
+    for (const b of (m.blocks || [])) {
+      const w = CS.applyT(m.transform, b.x, b.y);
+      const ll = model.proj.toLL(w.e, w.n);
+      blocks.push({ lat: ll.lat, lng: ll.lng, label: b.b });
+    }
+    for (const r of (m.roads || [])) {
+      const w = CS.applyT(m.transform, r.x, r.y);
+      const ll = model.proj.toLL(w.e, w.n);
+      roads.push({ lat: ll.lat, lng: ll.lng });
+    }
+  }
+  const sections = Object.entries(model.sections)
+    .filter(([label]) => label !== '*')
+    .map(([label, s]) => ({ lat: s.lat, lng: s.lng, label }));
+  model._layerCache = { lots, blocks, roads, sections };
+  return model._layerCache;
+}
+
+function buildLayers(cemIds, soloTarget) {
+  const L = { lots: [], blocks: [], roads: [], sections: [], cems: [], targets: [] };
+  for (const cid of cemIds) {
+    const model = getModel(cid);
+    if (!model) continue;
+    const cache = modelLayerCache(model);
+    L.lots.push(...cache.lots);
+    L.blocks.push(...cache.blocks);
+    L.roads.push(...cache.roads);
+    L.sections.push(...cache.sections);
+    const cem = model.cem;
+    L.cems.push({ lat: cem.data.meta.cem.lat, lng: cem.data.meta.cem.lng, label: cem.name });
+    if (soloTarget) continue;
+    for (const r of model.requests) {
+      if (!r.loc) continue;
+      const st = progressOf(r.mid).st || '';
+      L.targets.push({
+        lat: r.loc.lat, lng: r.loc.lng,
+        color: st === 'done' ? '#2e7d32' : st ? '#a07a2c' : '#8b3a1f',
+        label: r.ln, ref: r, model, r: 5.5,
+      });
+    }
+  }
+  if (soloTarget && soloTarget.loc) {
+    L.targets.push({ lat: soloTarget.loc.lat, lng: soloTarget.loc.lng, color: '#8b3a1f', r: 7 });
+  }
+  return L;
+}
+
 /* ---------------- main map ---------------- */
 let mainMap = null;
 function ensureMap() {
   if (mainMap) return;
-  mainMap = new MapView($('map-canvas'), model, {
+  mainMap = new MapView($('map-canvas'), gproj, {
     onTap: (x, y) => {
       const hit = mainMap.hitTest(x, y);
-      if (hit && hit.ref) openGuide(hit.ref);
+      if (hit && hit.ref) openGuide(hit.ref, hit.model);
     },
   });
   $('map-zoom-in').addEventListener('click', () => mainMap.zoomAt(mainMap.w / 2, mainMap.h / 2, 1.35));
   $('map-zoom-out').addEventListener('click', () => mainMap.zoomAt(mainMap.w / 2, mainMap.h / 2, 0.74));
-  $('map-fit').addEventListener('click', () => mainMap.fit());
+  $('map-fit').addEventListener('click', fitMap);
   $('map-locate').addEventListener('click', () => {
     geo.on();
-    if (geo.pos) { mainMap.centerOn(geo.pos.lat, geo.pos.lng, Math.max(mainMap.scale, 3)); }
+    if (geo.pos) mainMap.centerOn(geo.pos.lat, geo.pos.lng, Math.max(mainMap.scale, 3));
     else toast('Waiting for GPS fix…');
   });
   geo.listeners.add(p => { if (mainMap) { mainMap.user = p; if ($('panel-map').classList.contains('active')) mainMap.draw(); } });
-  mainMap.fit();
 }
 window.addEventListener('resize', () => {
   if (mainMap) mainMap.resize();
   if (guideMap) guideMap.resize();
 });
-function refreshMapTargets() {
+function refreshMapLayers() {
   if (!mainMap) return;
-  mainMap.model = model;
-  mainMap.targets = model.requests.filter(r => r.loc).map(r => {
-    const st = progressOf(r.mid).st || '';
-    return {
-      lat: r.loc.lat, lng: r.loc.lng,
-      color: st === 'done' ? '#2e7d32' : st ? '#a07a2c' : '#8b3a1f',
-      label: r.ln, ref: r, r: 5.5,
-    };
-  });
+  mainMap.layers = buildLayers(activeCemList());
   mainMap.user = geo.pos;
   mainMap.draw();
+}
+function fitMap() {
+  if (!mainMap) return;
+  const ids = activeCemList();
+  if (ids.length === 1) {
+    const model = getModel(ids[0]);
+    const pts = [{ lat: model.meta.cem.lat, lng: model.meta.cem.lng }];
+    const cache = modelLayerCache(model);
+    pts.push(...cache.lots, ...cache.sections);
+    for (const r of model.requests) if (r.loc) pts.push(r.loc);
+    mainMap.fitTo(pts, 150);
+  } else {
+    mainMap.fitTo(DS.cemeteries.map(c => ({ lat: c.data.meta.cem.lat, lng: c.data.meta.cem.lng })), 800);
+  }
 }
 
 /* ---------------- search ---------------- */
@@ -570,11 +765,11 @@ $('search-input').addEventListener('input', () => {
 function renderSearch() {
   const q = $('search-input').value;
   const wrap = $('search-results');
-  const res = CS.search(model, q, 60);
   if (!q.trim()) { wrap.innerHTML = ''; return; }
+  const res = CS.searchAll(ensureAllModels(), q, 60);
   if (!res.length) { wrap.innerHTML = '<div class="empty-state">No matches.</div>'; return; }
   wrap.innerHTML = '';
-  for (const { kind, item } of res) {
+  for (const { kind, item, model } of res) {
     const div = document.createElement('div');
     div.className = 'sres';
     const p = kind === 'mem' ? item.p : { section: item.section, sub: item.sub, block: item.block, lot: item.lot, grave: item.grave };
@@ -582,33 +777,36 @@ function renderSearch() {
     const plotStr = kind === 'mem' ? item.plot :
       [item.section + (item.sub ? ' Sub ' + item.sub : ''), item.block && 'Blk ' + item.block, item.lot && 'Lot ' + item.lot, item.grave && 'Gr ' + item.grave].filter(Boolean).join(' ');
     const ros = kind === 'ros' ? item : item.ros;
+    const bsaUid = model.cem.bsaUid;
     div.innerHTML = `
       <div class="tname">${esc(item.name)}<span class="years">${CS.yearsOf(item)}</span>
         ${item.veteran ? '<span class="badge stone">vet</span>' : ''}
         ${kind === 'mem' && item.hasGravePhoto ? '<span title="stone photographed">📷</span>' : ''}
         ${kind === 'mem' && item.hasRequest ? '<span class="badge rust">photo requested</span>' : ''}
       </div>
-      <div class="tmeta">${esc(plotStr || 'no plot recorded')}${kind === 'ros' || (ros && ros.key > 0) ? ' · <span class="lbl">city register</span>' : ''}</div>
+      <div class="tmeta"><span class="lbl">${esc(model.cem.name)}</span> ${esc(plotStr || 'no plot recorded')}${kind === 'ros' ? ' · <span class="lbl">city register</span>' : ''}</div>
       <div>${loc ? `<span class="loc-chip"><span class="dot ${loc.level === 'lot' || loc.level === 'gps' ? 'q-lot' : loc.level === 'section' ? 'q-section' : 'q-block'}"></span>${loc.level} ±${Math.round(loc.acc)} m</span>` : ''}</div>
       <div class="trow-actions">
         ${loc ? '<button class="mini act-guide">➤ Guide</button><button class="mini act-map">Map</button>' : ''}
         ${kind === 'mem' ? `<a class="mini" style="text-decoration:none;" href="https://www.findagrave.com/memorial/${item.mid}" target="_blank" rel="noopener">Find a Grave ↗</a>` : ''}
-        ${ros && ros.key > 0 ? `<a class="mini" style="text-decoration:none;" href="https://www.bsaonline.com/SiteSearch/PropertyDetails?uid=2024&RecordKey=${ros.key}&RecordKeyType=10&ReferenceKey=${ros.key}&ReferenceType=6&SearchFocus=Cemetery%20Management&SearchCategory=Name&SearchText=x&PageIndex=1" target="_blank" rel="noopener">Register ↗</a>` : ''}
+        ${ros && ros.key > 0 && bsaUid ? `<a class="mini" style="text-decoration:none;" href="https://www.bsaonline.com/SiteSearch/PropertyDetails?uid=${bsaUid}&RecordKey=${ros.key}&RecordKeyType=10&ReferenceKey=${ros.key}&ReferenceType=6&SearchFocus=Cemetery%20Management&SearchCategory=Name&SearchText=x&PageIndex=1" target="_blank" rel="noopener">Register ↗</a>` : ''}
       </div>`;
     const target = {
-      name: item.name, mid: kind === 'mem' ? item.mid : (item.mem ? item.mem.mid : null),
+      name: item.name, ln: item.last || '', by: item.by || null, dy: item.dy || null,
+      mid: kind === 'mem' ? item.mid : (item.mem ? item.mem.mid : null),
       rosKey: ros && ros.key ? ros.key : null,
       loc, pBest: p && p.section ? p : null, pRos: kind === 'ros' ? p : null,
       plot: plotStr,
     };
     const g = div.querySelector('.act-guide');
-    if (g) g.addEventListener('click', () => openGuide(target));
+    if (g) g.addEventListener('click', () => openGuide(target, model));
     const mm = div.querySelector('.act-map');
     if (mm) mm.addEventListener('click', () => {
+      store.prefs.activeCem = String(model.cem.id);
+      save();
+      renderCemSelect();
       switchTab('map');
-      ensureMap();
-      mainMap.targets = mainMap.targets.filter(t => !t.temp);
-      mainMap.targets.push({ lat: loc.lat, lng: loc.lng, color: '#2b5c7a', label: item.name.split(' ').pop(), ref: target, r: 7, temp: true });
+      mainMap.layers.targets.push({ lat: loc.lat, lng: loc.lng, color: '#2b5c7a', label: item.name.split(' ').pop(), ref: target, model, r: 7 });
       mainMap.highlight = { lat: loc.lat, lng: loc.lng, acc: loc.acc };
       mainMap.centerOn(loc.lat, loc.lng, Math.max(mainMap.scale, 4));
     });
@@ -618,26 +816,56 @@ function renderSearch() {
 
 /* ---------------- data tab ---------------- */
 function renderDataInfo() {
-  const m = model.meta;
-  const upd = store.updates;
-  const gpsAnchors = model.memorials.filter(x => x.lat != null).length;
-  $('dataset-info').innerHTML = [
-    `<strong>${esc(m.cemetery)}</strong>`,
-    `Baked data as of <strong>${esc(m.asOf || '?')}</strong>` + (upd.requestsAsOf ? ` · requests refreshed <strong>${esc(upd.requestsAsOf)}</strong>` : '') + (upd.memorialsAsOf ? ` · memorials refreshed <strong>${esc(upd.memorialsAsOf)}</strong>` : ''),
-    `${model.requests.length} photo requests · ${model.memorials.length} memorials (${gpsAnchors} GPS) · ${model.roster.length} register records`,
-    `${Object.keys(store.progress).length} graves with saved progress/notes`,
-  ].join('<br>');
-  // bookmarklets
-  const bk = CS.bookmarklets(m.fagCemeteryId || 1252);
-  const a1 = $('bkm-requests'), a2 = $('bkm-memorials');
-  a1.setAttribute('href', bk.requests);
-  a2.setAttribute('href', bk.memorials);
+  const lines = [];
+  lines.push(`<strong>${DS.cemeteries.length} cemeteries</strong> within ${DS.radiusMiles || '—'} mi · dataset generated <strong>${esc(DS.generated || '?')}</strong>`);
+  const totReq = DS.cemeteries.reduce((s, c) => s + c.data.requests.length, 0);
+  const totMem = DS.cemeteries.reduce((s, c) => s + c.data.memorials.length, 0);
+  const totAnch = builtModels().reduce((s, m) => s + m.memorials.filter(x => x.lat != null).length, 0);
+  lines.push(`${totReq} open photo requests · ${totMem.toLocaleString()} memorials (${totAnch.toLocaleString()} GPS anchors in built models) · ${Object.keys(store.progress).length} graves with saved progress`);
+  for (const c of DS.cemeteries.slice(0, 50)) {
+    lines.push(`&nbsp;&nbsp;· ${esc(c.name)} — ${c.data.requests.length} req, ${c.data.memorials.length.toLocaleString()} memorials${c.data.roster && c.data.roster.length ? ', register ✓' : ''}${c.miles != null ? ', ' + c.miles + ' mi' : ''}`);
+  }
+  $('dataset-info').innerHTML = lines.join('<br>');
+
+  // when served by the Flask container, show live refresh status
+  const staticMsg = () => {
+    $('server-status').innerHTML = '<span class="badge outline">static hosting</span> data updates when the site is redeployed — or via the imports below.';
+  };
+  if (typeof fetch === 'function' && location.protocol !== 'file:') {
+    fetch('./api/status', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(st => {
+      if (!st) { staticMsg(); return; }
+      $('server-status').innerHTML = `<span class="badge">auto-refresh on</span> server refreshes every ${st.refreshHours} h · last build: ${esc(st.generated || '?')} (${st.cemeteries} cemeteries, ${st.requests} requests)${st.refreshing ? ' · <em>refreshing now…</em>' : ''}${st.lastError ? ' · ⚠ ' + esc(st.lastError) : ''}`;
+    }).catch(staticMsg);
+  } else staticMsg();
+
+  const bk = CS.bookmarklets(dataCemId());
+  $('bkm-requests').setAttribute('href', bk.requests);
+  $('bkm-memorials').setAttribute('href', bk.memorials);
+  renderDataCemSelect();
 }
-// clicking a bookmarklet link inside the app copies the code instead of running it
+function renderDataCemSelect() {
+  const sel = $('data-cem');
+  if (sel.options.length) return;
+  for (const c of DS.cemeteries) {
+    const o = document.createElement('option');
+    o.value = String(c.id);
+    o.textContent = c.name;
+    sel.appendChild(o);
+  }
+}
+function dataCemId() {
+  const sel = $('data-cem');
+  return +(sel.value || (DS.cemeteries[0] && DS.cemeteries[0].id) || 0);
+}
+$('data-cem').addEventListener('change', () => {
+  const bk = CS.bookmarklets(dataCemId());
+  $('bkm-requests').setAttribute('href', bk.requests);
+  $('bkm-memorials').setAttribute('href', bk.memorials);
+});
 for (const [id, key] of [['bkm-requests', 'requests'], ['bkm-memorials', 'memorials']]) {
   $(id).addEventListener('click', ev => {
     ev.preventDefault();
-    const bk = CS.bookmarklets(model.meta.fagCemeteryId || 1252);
+    const bk = CS.bookmarklets(dataCemId());
     navigator.clipboard && navigator.clipboard.writeText(bk[key]).then(
       () => toast('Bookmarklet code copied — create a new bookmark and paste it as the URL'),
       () => toast('Copy failed — long-press the link and copy it instead')
@@ -646,12 +874,31 @@ for (const [id, key] of [['bkm-requests', 'requests'], ['bkm-memorials', 'memori
 }
 
 function rebuild() {
-  model = CS.buildModel(DATA, store.updates);
-  if (mainMap) { mainMap.model = model; refreshMapTargets(); }
-  if (guideMap) guideMap.model = model;
+  models.clear();
+  ensureAllModels();
+  if (mainMap) refreshMapLayers();
+  renderCemSelect();
   renderWalk();
   renderDataInfo();
   updateStats();
+}
+
+/* validate a candidate update by building a throwaway model BEFORE committing */
+function commitUpdates(cemId, patch, statusEl, okMsg) {
+  const cid = String(cemId);
+  const cem = cemById.get(cid);
+  if (!cem) { statusEl.textContent = '⚠ Unknown cemetery.'; return false; }
+  const candidate = Object.assign({}, store.updates[cid] || {}, patch);
+  try { CS.buildModel(cem.data, candidate); }
+  catch (e) {
+    statusEl.textContent = '⚠ Update rejected — it would break the app (' + e.message + ')';
+    return false;
+  }
+  store.updates[cid] = candidate;
+  saveUpdates();
+  rebuild();
+  statusEl.textContent = okMsg;
+  return true;
 }
 
 /* file/drop helpers */
@@ -705,32 +952,23 @@ function readSheetFile(file) {
   }));
 }
 
-/* validate a candidate updates object by building a throwaway model BEFORE committing */
-function commitUpdates(patch, statusEl, okMsg) {
-  const candidate = Object.assign({}, store.updates, patch);
-  try { CS.buildModel(DATA, candidate); }
-  catch (e) {
-    statusEl.textContent = '⚠ Update rejected — it would break the app (' + e.message + ')';
-    return false;
-  }
-  store.updates = candidate;
-  saveUpdates();
-  rebuild();
-  statusEl.textContent = okMsg;
-  return true;
-}
-
 /* requests update */
 function applyRequests(result, sourceName) {
   if (result.error) { $('fag-status').textContent = '⚠ ' + result.error; return; }
-  if (!result.requests.length) { $('fag-status').textContent = '⚠ No requests found in ' + sourceName; return; }
-  const cur = model.requests.length;
-  if (cur && result.requests.length < cur * 0.5 &&
-      !confirm(`This replaces the current ${cur} photo requests with only ${result.requests.length}. A partial file loses requests from view (progress is kept). Continue?`)) {
+  const cid = dataCemId();
+  const cem = cemById.get(String(cid));
+  const cur = cem ? requestRowsFor(cem).length : 0;
+  if (!result.requests.length &&
+      !confirm(`The snapshot has ZERO open requests for ${cem ? cem.name : 'this cemetery'} — replace the current ${cur}? (Means everything was fulfilled or removed.)`)) {
     $('fag-status').textContent = 'Cancelled.';
     return;
   }
-  if (commitUpdates({ requests: result.requests, requestsAsOf: new Date().toISOString().substring(0, 10) },
+  if (result.requests.length && cur && result.requests.length < cur * 0.5 &&
+      !confirm(`This replaces the current ${cur} photo requests for ${cem.name} with only ${result.requests.length}. Continue?`)) {
+    $('fag-status').textContent = 'Cancelled.';
+    return;
+  }
+  if (commitUpdates(cid, { requests: result.requests, requestsAsOf: new Date().toISOString().substring(0, 10) },
     $('fag-status'), '✓ ' + result.requests.length + ' requests loaded from ' + sourceName)) {
     toast(result.requests.length + ' photo requests updated');
   }
@@ -740,7 +978,6 @@ $('btn-fag-apply').addEventListener('click', () => {
   if (!text) { $('fag-status').textContent = 'Paste JSON/CSV first, or drop a file.'; return; }
   if (text[0] === '[' || text[0] === '{') applyRequests(CS.parseRequestsJson(text), 'pasted JSON');
   else {
-    // CSV text paste
     ensureXlsx().then(() => {
       const wb = XLSX.read(text, { type: 'string', raw: false });
       const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: false });
@@ -761,10 +998,12 @@ wireDrop('fag-drop', 'fag-file', file => {
 $('btn-mem-apply').addEventListener('click', () => {
   const text = $('mem-input').value.trim();
   if (!text) { $('mem-status').textContent = 'Paste the bookmarklet JSON first.'; return; }
-  const result = CS.parseMemorialsJson(text, model.meta.cem);
+  const cid = dataCemId();
+  const cem = cemById.get(String(cid));
+  const result = CS.parseMemorialsJson(text, cem ? cem.data.meta.cem : DS.home);
   if (result.error) { $('mem-status').textContent = '⚠ ' + result.error; return; }
   if (!result.memorials.length) { $('mem-status').textContent = '⚠ No memorials in that JSON.'; return; }
-  if (commitUpdates({ memorials: result.memorials, memorialsAsOf: new Date().toISOString().substring(0, 10) },
+  if (commitUpdates(cid, { memorials: result.memorials, memorialsAsOf: new Date().toISOString().substring(0, 10) },
     $('mem-status'), '✓ ' + result.memorials.length + ' memorials loaded')) {
     toast(result.memorials.length + ' memorials updated');
   }
@@ -774,26 +1013,29 @@ $('btn-mem-apply').addEventListener('click', () => {
 function applyRoster(result, sourceName) {
   if (result.error) { $('bsa-status').textContent = '⚠ ' + result.error; return; }
   if (!result.roster.length) { $('bsa-status').textContent = '⚠ No rows recognized in ' + sourceName; return; }
-  const cur = model.roster.length;
+  const cid = dataCemId();
+  const cem = cemById.get(String(cid));
+  const cur = cem && cem.data.roster ? cem.data.roster.length : 0;
   if (cur && result.roster.length < cur * 0.5 &&
-      !confirm(`This replaces the current ${cur}-record burial register with only ${result.roster.length} rows. Continue?`)) {
+      !confirm(`This replaces the current ${cur}-record register for ${cem.name} with only ${result.roster.length} rows. Continue?`)) {
     $('bsa-status').textContent = 'Cancelled.';
     return;
   }
-  commitUpdates({ roster: result.roster },
-    $('bsa-status'), '✓ ' + result.roster.length + ' register rows loaded from ' + sourceName + ' (replaces baked register)');
+  commitUpdates(cid, { roster: result.roster },
+    $('bsa-status'), '✓ ' + result.roster.length + ' register rows loaded from ' + sourceName);
 }
+function rosterProfile() { return dataCemId() === 1252 ? 'oakgrove' : 'generic'; }
 $('btn-bsa-apply').addEventListener('click', () => {
   const text = $('bsa-input').value.trim();
   if (!text) { $('bsa-status').textContent = 'Paste roster rows first, or drop a file.'; return; }
-  applyRoster(CS.parseRosterText(text), 'pasted text');
+  applyRoster(CS.parseRosterText(text, rosterProfile()), 'pasted text');
 });
 wireDrop('bsa-drop', 'bsa-file', file => {
-  readSheetFile(file).then(rows => applyRoster(CS.parseRosterSheet(rows), file.name))
+  readSheetFile(file).then(rows => applyRoster(CS.parseRosterSheet(rows, rosterProfile()), file.name))
     .catch(e => { $('bsa-status').textContent = '⚠ ' + e.message; });
 });
 
-/* export / import / reset */
+/* export / import / reset / revert */
 $('btn-export').addEventListener('click', () => {
   const payload = { app: 'cemetery-search', v: 3, exported: new Date().toISOString(), progress: store.progress, updates: store.updates, prefs: store.prefs };
   const blob = new Blob([JSON.stringify(payload, null, 1)], { type: 'application/json' });
@@ -811,18 +1053,27 @@ $('import-file').addEventListener('change', e => {
     const data = JSON.parse(t);
     if (data.app !== 'cemetery-search' && !data.progress) throw new Error('Not a Cemetery Search backup');
     const inProg = (data.progress && typeof data.progress === 'object' && !Array.isArray(data.progress)) ? data.progress : {};
-    const inUpd = (data.updates && typeof data.updates === 'object' && !Array.isArray(data.updates)) ? data.updates : {};
     const curN = Object.keys(store.progress).length, inN = Object.keys(inProg).length;
     if (curN && !confirm(`Import backup${data.exported ? ' from ' + String(data.exported).substring(0, 10) : ''}: ${inN} progress entries. Newer entries win; nothing currently saved is deleted. Continue?`)) return;
-    // merge per-grave, newest timestamp wins — an old backup can't clobber fresh field work
     for (const [k, v] of Object.entries(inProg)) {
       if (!store.progress[k] || (v && v.ts || 0) >= (store.progress[k].ts || 0)) store.progress[k] = v;
     }
-    try { CS.buildModel(DATA, inUpd); store.updates = inUpd; } catch (err) { toast('⚠ Backup dataset updates were invalid — progress imported, updates skipped'); }
+    // restore dataset updates too — but only entries that build cleanly
+    const inUpd = (data.updates && typeof data.updates === 'object' && !Array.isArray(data.updates)) ? data.updates : {};
+    let updOk = 0, updBad = 0;
+    for (const [cid, u] of Object.entries(inUpd)) {
+      const cem = cemById.get(String(cid));
+      if (!cem || !u || typeof u !== 'object') { updBad++; continue; }
+      try {
+        CS.buildModel(cem.data, u);
+        store.updates[String(cid)] = u;
+        updOk++;
+      } catch (err) { updBad++; }
+    }
     flushSave();
-    saveUpdates();
+    if (updOk) saveUpdates();
     rebuild();
-    toast('Backup imported ✓');
+    toast('Backup imported ✓' + (updOk ? ` (+${updOk} dataset updates)` : '') + (updBad ? ` — ${updBad} invalid update(s) skipped` : ''));
   }).catch(err => toast('Import failed: ' + err.message));
   e.target.value = '';
 });
@@ -833,11 +1084,11 @@ $('btn-reset').addEventListener('click', () => {
   rebuild();
 });
 $('btn-revert').addEventListener('click', () => {
-  if (!confirm('Discard all dataset updates (requests/memorials/register refreshes) and return to the app\'s baked-in data? Progress is kept.')) return;
+  if (!confirm('Discard all manual dataset updates and return to the served data? Progress is kept.')) return;
   store.updates = {};
   saveUpdates();
   rebuild();
-  toast('Reverted to baked dataset');
+  toast('Reverted to served dataset');
 });
 
 /* ---------------- walk controls ---------------- */
@@ -861,7 +1112,10 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 }
 
 /* ---------------- boot ---------------- */
-$('subtitle').textContent = (model.meta.cemetery || '').replace(', Michigan', ', MI');
+$('subtitle').textContent = DS.cemeteries.length > 1
+  ? `${DS.cemeteries.length} local cemeteries · ${DS.generated || ''}`
+  : ((DS.cemeteries[0] && DS.cemeteries[0].name) || 'No dataset');
+renderCemSelect();
 renderWalk();
 renderDataInfo();
 updateStats();

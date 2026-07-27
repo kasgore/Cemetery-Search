@@ -11,9 +11,10 @@ function t(name, cond, detail) {
 }
 function section(s) { console.log('— ' + s); }
 
-/* ---------- parsePlot ---------- */
+/* ---------- parsePlot (Oak Grove profile) ---------- */
 section('parsePlot');
-const pp = CS.parsePlot;
+const pp = s => CS.parsePlot(s, 'oakgrove');
+const pg = s => CS.parsePlot(s, 'generic');
 t('basic blk', JSON.stringify(pp('Square Hill Blk E Lot 31')) === JSON.stringify({ section: 'Square Hill', sub: '', block: 'E', lot: '31', grave: '' }));
 t('row+grave', (() => { const p = pp('Round Hill Row M Lot 15 Grave 1'); return p.section === 'Round Hill' && p.block === 'M' && p.lot === '15' && p.grave === '1'; })());
 t('old part sub', (() => { const p = pp('Old Part Sub 4 Lot 352'); return p.section === 'Old Part' && p.sub === '4' && p.lot === '352'; })());
@@ -34,6 +35,22 @@ t('empty null', pp('') === null && pp(null) === null);
 t('numeric legacy block', (() => { const p = pp('Old Part Block 111 Lot 176'); return p.section === 'Old Part' && p.block === '111'; })());
 t('veterans', pp('Veteran Hill Blk S Lot 4 Grave 2').section === 'Veteran Hill');
 t('north hill row', pp('North Hill Row J Lot 102').block === 'J');
+
+/* ---------- parsePlot (generic profile — other cemeteries) ---------- */
+section('parsePlot generic');
+// the Oak Grove aliases must NOT leak into other cemeteries
+t('generic keeps Section 11 literal', pg('Section 11 Lot 5').section === 'Section 11');
+t('generic keeps Section 7 literal', pg('Section 7, Row 18, Lot 105').section === 'Section 7');
+t('salt river row-lot-space', (() => { const p = pg('Row 4 Lot 12 Space 2'); return p && p.section === '*' && p.block === '4' && p.lot === '12' && p.grave === '2'; })());
+t('salt river lowercase', (() => { const p = pg('row 14 lot 3'); return p && p.block === '14' && p.lot === '3'; })());
+t('ridgelawn section-comma', (() => { const p = pg('Section A, Lot 5, Grave B'); return p && p.section === 'Section A' && p.lot === '5' && p.grave === 'B'; })());
+t('ridgelawn dashed', (() => { const p = pg('Section-C, Plot-12, Grave-A'); return p && p.section === 'Section C' && p.grave === 'A'; })());
+t('ithaca dash code', (() => { const p = pg('Ithaca-2nd ADD-31--2'); return p && p.section === '2nd ADD' && p.block === '31' && p.grave === '2'; })());
+t('terse 12B', (() => { const p = pg('12B'); return p && p.section === '*' && p.lot === '12' && p.grave === 'B'; })());
+t('bare block letter', (() => { const p = pg('A'); return p && p.section === '*' && p.block === 'A'; })());
+t('bare lot number', (() => { const p = pg('351'); return p && p.section === '*' && p.lot === '351'; })());
+t('leading name section', (() => { const p = pg('Old Section Blk D Lot 9'); return p && p.section === 'Old Section' && p.block === 'D'; })());
+t('generic rejects junk', pg('unknown') === null && pg('') === null && pg('No Location Given - Interment Record Only') === null);
 
 /* ---------- parseBsaCode ---------- */
 section('parseBsaCode');
@@ -69,8 +86,12 @@ t('proj roundtrip', Math.abs(rt.lat - 43.4212995) < 1e-9);
 
 /* ---------- model on real data ---------- */
 section('model (real dataset)');
-const dataJs = fs.readFileSync(path.join(APP, 'oakgrove-data.js'), 'utf8');
-const data = JSON.parse(dataJs.substring(dataJs.indexOf('{'), dataJs.lastIndexOf(';')));
+const dataJs = fs.readFileSync(path.join(APP, 'cemetery-data.js'), 'utf8');
+const rawData = JSON.parse(dataJs.substring(dataJs.indexOf('{'), dataJs.lastIndexOf(';')));
+const DS = CS.normalizeDataset(rawData);
+t('dataset normalized', DS.cemeteries.length >= 1, String(DS.cemeteries.length));
+const oakCem = DS.cemeteries.find(c => c.id === 1252) || DS.cemeteries[0];
+const data = oakCem.data;
 const model = CS.buildModel(data, {});
 t('memorial count', model.memorials.length === data.memorials.length);
 t('requests enriched', model.requests.every(r => 'loc' in r));
@@ -156,7 +177,7 @@ const rs = CS.parseRosterSheet([
   ['Name', 'Birth Date', 'Death Date', 'Burial Date', 'Section', 'Block', 'Lot', 'Grave'],
   ['Eldredge, Lydia', '', '', '5/2/1901', '01', '107', '101', '2'],
   ['Henry, Charles', '1830', '1901', '', '11', 'G', '058', '4'],
-]);
+], 'oakgrove');
 t('roster sheet', rs.roster && rs.roster.length === 2, rs.error);
 t('roster sheet section decode', rs.roster[0][6] === 'Old Part' && rs.roster[0][7] === '1');
 t('roster sheet lot dezero', rs.roster[1][9] === '58');
@@ -233,6 +254,70 @@ const opModel = CS.buildModel({
 }, {});
 const opNbs = CS.neighbors(opModel, opModel.requests[0].pBest, 333);
 t('old part register neighbor found despite numeric block', opNbs.some(n => n.name === 'Gray, Thomas'), JSON.stringify(opNbs.map(n => n.name)));
+
+/* ---------- multi-cemetery + anchor-cluster locate ---------- */
+section('multi-cemetery');
+// synthetic cemetery WITHOUT plat maps: GPS anchors alone must yield lot-level fixes
+const synthCem = {
+  meta: { cemetery: 'Anchorville', fagCemeteryId: 999, cem: { lat: 43.5, lng: -84.7 }, declination: -6.6, asOf: '2026-07-26' },
+  sections: {}, maps: [],
+  requests: [
+    { prId: 1, mid: 9001, fn: 'Target', ln: 'Person', by: 1900, dy: 1950, plot: 'Section A Lot 12' },
+  ],
+  memorials: [
+    // three same-lot anchors clustered within ~4 m
+    [8001, 'Anna Anchor', '', 1880, 1940, 'Section A Lot 12', 43.500100, -84.700100, 1],
+    [8002, 'Bert Anchor', '', 1882, 1944, 'Section A Lot 12', 43.500110, -84.700120, 1],
+    [8003, 'Carl Anchor', '', 1885, 1948, 'Section A Lot 12 Grave 3', 43.500095, -84.700090, 0],
+    // adjacent lot anchor
+    [8004, 'Dora Near', '', 1890, 1955, 'Section A Lot 13', 43.500150, -84.700200, 1],
+    // far-off same-section anchors to give a derived section centroid
+    [8005, 'Eve Far', '', 1870, 1930, 'Section A Lot 40', 43.500600, -84.700800, 1],
+    [8006, 'Fred Far', '', 1871, 1931, 'Section A Lot 41', 43.500610, -84.700790, 1],
+  ],
+  roster: [],
+};
+// NOTE: parsePlot has no 'Section A' pattern -> plots won't parse... use a real section name instead.
+synthCem.requests[0].plot = 'Round Hill Blk Z Lot 12';
+synthCem.memorials.forEach(m => { m[5] = m[5].replace('Section A', 'Round Hill Blk Z'); });
+const synthModel = CS.buildModel(synthCem, {});
+t('anchor-cluster lot locate', synthModel.requests[0].loc && synthModel.requests[0].loc.level === 'lot',
+  synthModel.requests[0].loc && synthModel.requests[0].loc.level);
+if (synthModel.requests[0].loc) {
+  const d = CS.distM(synthModel.requests[0].loc.lat, synthModel.requests[0].loc.lng, 43.5001, -84.7001);
+  t('anchor-cluster position close', d < 6, d.toFixed(1) + 'm');
+  t('anchor acc sane', synthModel.requests[0].loc.acc >= 6 && synthModel.requests[0].loc.acc <= 18, String(synthModel.requests[0].loc.acc));
+}
+t('derived sections', synthModel.sections['Round Hill'] && synthModel.sections['Round Hill'].derived === true);
+// adjacent-lot anchor fallback
+const adjLoc = CS.locate(synthModel, { section: 'Round Hill', sub: '', block: 'Z', lot: '14', grave: '' });
+t('anchor adjacent locate', adjLoc && (adjLoc.level === 'adjacent' || adjLoc.level === 'lot'), adjLoc && adjLoc.level);
+// normalizeDataset shapes
+const norm2 = CS.normalizeDataset({ v: 2, generated: '2026-07-26', home: { lat: 43.42, lng: -84.61 }, cemeteries: [
+  { id: 999, name: 'Anchorville', lat: 43.5, lng: -84.7, miles: 8.3, county: 'Test', requests: [], memorials: [], declination: -6.6 },
+]});
+t('normalize v2', norm2.cemeteries.length === 1 && norm2.cemeteries[0].data.meta.cem.lat === 43.5);
+const normLegacy = CS.normalizeDataset(data); // legacy single-cemetery shape
+t('normalize legacy', normLegacy.cemeteries.length === 1 && normLegacy.cemeteries[0].data === data);
+// searchAll across two models
+const twoModels = [model, synthModel];
+const sAll = CS.searchAll(twoModels, 'anchor', 20);
+t('searchAll crosses cemeteries', sAll.some(h => h.model === synthModel), String(sAll.length));
+// sectionless register row (Alma style: Section empty, Block 'T', Lot '1') keys to '*'
+// and locates against bare-letter FAG plots
+const almaStyle = CS.buildModel({
+  meta: { cemetery: 'Riverside-like', fagCemeteryId: 1506, cem: { lat: 43.39, lng: -84.66 }, declination: -6.6, asOf: '' },
+  sections: {}, maps: [],
+  requests: [{ prId: 9, mid: 7101, fn: 'Harland', ln: 'Nelson', by: 1900, dy: 1985, plot: '' }],
+  memorials: [
+    [7201, 'Ada Near', '', 1890, 1960, 'Block T, Lot 1, Plot 2', 43.390100, -84.660100, 1],
+    [7202, 'Ben Near', '', 1891, 1961, 'Block T, Lot 1, Plot 4', 43.390105, -84.660110, 1],
+  ],
+  roster: [[2, 'NELSON, HARLAND F.', 'M', '', '1985', '03/20/1985', '', '', 'T', '1', '1', 'OCCUPIED', 0, '', '']],
+}, {});
+t('sectionless register keys to *', almaStyle.roster[0].section === '*', almaStyle.roster[0].section);
+t('register-located via bare-letter anchors', almaStyle.requests[0].loc && almaStyle.requests[0].loc.level === 'lot',
+  almaStyle.requests[0].loc && almaStyle.requests[0].loc.level);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
