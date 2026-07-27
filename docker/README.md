@@ -1,9 +1,15 @@
 # Deploying Cemetery Search with Portainer (Flask + auto-refresh)
 
-One container does everything: serves the app **and refreshes all cemetery data
+One container does everything: serves the app on **port 80 (http) and 443
+(https, self-signed for 192.168.5.14)** — **and refreshes all cemetery data
 automatically** — photo requests every `REFRESH_HOURS` (default 6 h), memorial
 indexes weekly, cemetery discovery daily (any nearby cemetery that gets a new
 photo request is added by itself), BS&A burial registers every ~60 days.
+
+The tarball `cemetery-search-portainer.tar.gz` here is the self-contained
+deploy bundle — its `DEPLOY.md` covers the Pi steps, including the two ways
+to put it on 192.168.5.14 (host port mapping vs. dedicated macvlan IP) and
+the one-time browser warning for the self-signed https certificate.
 
 ## Deploy from the repository (easiest)
 
@@ -32,7 +38,7 @@ then `python app.py` from the repo root — same app, same auto-refresh.
 
 ## Endpoints
 
-- `http://<host>:8420/` — the app
+- `http://<host>/` (or https) — the app
 - `/api/status` — dataset freshness, counts, last error
 - `POST /api/refresh` — trigger a refresh now
 

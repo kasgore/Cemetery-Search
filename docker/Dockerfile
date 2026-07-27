@@ -3,6 +3,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# openssl CLI generates the self-signed cert for LAN https
+RUN apt-get update && apt-get install -y --no-install-recommends openssl \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -17,10 +21,12 @@ COPY geometry/ /app/geometry/
 COPY seed/ /app/seed/
 
 ENV DATA_DIR=/data \
-    PORT=8420 \
+    PORT=80 \
+    HTTPS_PORT=443 \
+    CERT_HOSTS=192.168.5.14,localhost \
     REFRESH_HOURS=6
 
 VOLUME /data
-EXPOSE 8420
+EXPOSE 80 443
 
 CMD ["python", "app.py"]

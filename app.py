@@ -7,10 +7,14 @@ Serves the frontend and keeps its data fresh automatically: a background
 thread runs the refresher on a schedule (REFRESH_HOURS, default 6). On first
 boot with no data it populates itself (discovery -> pulls -> build).
 
-Env knobs: PORT (8420), REFRESH_HOURS (6), RADIUS_MILES (15),
-AUTO_REFRESH=0 to disable self-updating, DATA_DIR, SITE_DIR.
+Env knobs: PORT (8420), HTTPS_PORT (unset = HTTP only; the container sets
+80/443), CERT_HOSTS (SANs for the auto-generated self-signed cert),
+REFRESH_HOURS (6), RADIUS_MILES (15), AUTO_REFRESH=0 to disable
+self-updating, DATA_DIR, SITE_DIR.
 """
 import os
+import ssl
+import subprocess
 import threading
 
 from flask import Flask, jsonify, send_from_directory
@@ -95,8 +99,60 @@ def start_background_refresher():
 
 start_background_refresher()
 
+
+def ensure_self_signed_cert():
+    """Generate a self-signed cert for the LAN address via the openssl CLI.
+    Browsers warn on it; accepting the warning still gives a secure context,
+    which is what unlocks phone GPS/compass over https. Regenerated whenever
+    CERT_HOSTS changes."""
+    tls_dir = os.path.join(DATA_DIR, "tls")
+    cert, key = os.path.join(tls_dir, "cert.pem"), os.path.join(tls_dir, "key.pem")
+    hosts_file = os.path.join(tls_dir, "hosts.txt")
+    hosts_env = os.environ.get("CERT_HOSTS", "192.168.5.14,localhost")
+    if os.path.exists(cert) and os.path.exists(key):
+        try:
+            with open(hosts_file, encoding="utf-8") as f:
+                if f.read().strip() == hosts_env.strip():
+                    return cert, key
+        except OSError:
+            pass  # no marker: regenerate with the current hosts
+    os.makedirs(tls_dir, exist_ok=True)
+    hosts = [h.strip() for h in hosts_env.split(",") if h.strip()]
+    sans = []
+    for h in hosts:
+        parts = h.split(".")
+        is_ip = len(parts) == 4 and all(p.isdigit() for p in parts)
+        sans.append(("IP:" if is_ip else "DNS:") + h)
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+        "-keyout", key, "-out", cert, "-days", "3650",
+        "-subj", "/CN=Cemetery Search",
+        "-addext", "subjectAltName=" + ",".join(sans),
+    ], check=True, capture_output=True)
+    with open(hosts_file, "w", encoding="utf-8") as f:
+        f.write(hosts_env.strip())
+    refresher.log(f"generated self-signed certificate for {', '.join(hosts)} in {tls_dir}")
+    return cert, key
+
+
+def serve_https(port):
+    try:
+        cert, key = ensure_self_signed_cert()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
+        refresher.log(f"HTTPS disabled — could not create certificate ({e})")
+        return
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert, key)
+    from werkzeug.serving import run_simple
+    refresher.log(f"serving on https://0.0.0.0:{port}/ (self-signed — accept the browser warning once per device)")
+    run_simple("0.0.0.0", port, app, ssl_context=ctx, threaded=True)
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8420"))
+    https_port = os.environ.get("HTTPS_PORT")
+    if https_port:
+        threading.Thread(target=serve_https, args=(int(https_port),), daemon=True, name="https").start()
     try:
         from waitress import serve
         refresher.log(f"serving on http://0.0.0.0:{port}/ (waitress)")

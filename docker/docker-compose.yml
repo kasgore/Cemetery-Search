@@ -1,22 +1,46 @@
-# Cemetery Search — Portainer stack (Flask + automatic data refresher)
+# Cemetery Search — the app answers on ports 80 (http) and 443 (https).
 #
-# Build-based stack: point Portainer at the repository (Stacks -> Add stack ->
-# Repository, compose path docker/docker-compose.yml) or copy the repo to the
-# host and use this file. See docker/README.md.
+# TWO WAYS to put it on 192.168.5.14 — use exactly one:
+#
+# A) The Pi itself is 192.168.5.14 (or you don't care which host IP):
+#    keep the `ports:` block below and DELETE the `networks:` blocks.
+#
+# B) The CONTAINER gets its own dedicated LAN IP 192.168.5.14 (macvlan):
+#    delete the `ports:` block, uncomment the `networks:` blocks, and set
+#    `parent:` to the Pi's LAN interface (usually eth0). With macvlan the
+#    container's ports are reachable directly — no mapping needed.
+#    (macvlan quirk: the Pi host itself can't reach the container's IP;
+#    other devices on the LAN can.)
 services:
   cemetery-search:
     build:
-      context: ..
+      context: .
       dockerfile: docker/Dockerfile
+    image: cemetery-search:latest
     container_name: cemetery-search
     restart: unless-stopped
     ports:
-      - "8420:8420"
+      - "80:80"
+      - "443:443"
     environment:
-      REFRESH_HOURS: "6"     # photo requests refresh cadence
-      RADIUS_MILES: "15"     # how far out to auto-include cemeteries with requests
+      REFRESH_HOURS: "6"          # photo-request refresh cadence
+      RADIUS_MILES: "15"          # auto-include cemeteries with requests within this range
+      CERT_HOSTS: "192.168.5.14,localhost"   # SANs for the self-signed https cert
     volumes:
-      - cemetery_data:/data  # caches + generated dataset survive rebuilds
+      - cemetery_data:/data       # caches + refreshed dataset survive rebuilds
+    # networks:
+    #   lan:
+    #     ipv4_address: 192.168.5.14
 
 volumes:
   cemetery_data:
+
+# networks:
+#   lan:
+#     driver: macvlan
+#     driver_opts:
+#       parent: eth0              # the Pi's LAN interface
+#     ipam:
+#       config:
+#         - subnet: 192.168.5.0/24
+#           gateway: 192.168.5.1
