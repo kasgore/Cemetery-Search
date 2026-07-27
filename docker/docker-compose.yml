@@ -1,4 +1,8 @@
-# Cemetery Search — the app answers on ports 80 (http) and 443 (https).
+# Cemetery Search — reachable on ports 80 (http) and 443 (https).
+#
+# The app listens on 8420/8443 inside the container; the stack maps the
+# standard ports onto them (change only the left-hand numbers if 80/443 are
+# taken on the host).
 #
 # TWO WAYS to put it on 192.168.5.14 — use exactly one:
 #
@@ -6,9 +10,10 @@
 #    keep the `ports:` block below and DELETE the `networks:` blocks.
 #
 # B) The CONTAINER gets its own dedicated LAN IP 192.168.5.14 (macvlan):
-#    delete the `ports:` block, uncomment the `networks:` blocks, and set
-#    `parent:` to the Pi's LAN interface (usually eth0). With macvlan the
-#    container's ports are reachable directly — no mapping needed.
+#    delete the `ports:` block, uncomment the `networks:` blocks AND the
+#    PORT/HTTPS_PORT env overrides (macvlan has no port mapping — the app
+#    must listen on 80/443 itself), and set `parent:` to the Pi's LAN
+#    interface (usually eth0).
 #    (macvlan quirk: the Pi host itself can't reach the container's IP;
 #    other devices on the LAN can.)
 services:
@@ -20,12 +25,14 @@ services:
     container_name: cemetery-search
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      - "80:8420"     # http
+      - "443:8443"    # https (self-signed)
     environment:
       REFRESH_HOURS: "6"          # photo-request refresh cadence
       RADIUS_MILES: "15"          # auto-include cemeteries with requests within this range
       CERT_HOSTS: "192.168.5.14,localhost"   # SANs for the self-signed https cert
+      # PORT: "80"                # macvlan only (option B)
+      # HTTPS_PORT: "443"         # macvlan only (option B)
     volumes:
       - cemetery_data:/data       # caches + refreshed dataset survive rebuilds
     # networks:

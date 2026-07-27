@@ -20,13 +20,15 @@ COPY icons/ /app/icons/
 COPY geometry/ /app/geometry/
 COPY seed/ /app/seed/
 
+# conventional internal ports — the stack maps host 80/443 onto them
+# (macvlan deployments override with PORT=80 / HTTPS_PORT=443 env vars instead)
 ENV DATA_DIR=/data \
-    PORT=80 \
-    HTTPS_PORT=443 \
+    PORT=8420 \
+    HTTPS_PORT=8443 \
     CERT_HOSTS=192.168.5.14,localhost \
     REFRESH_HOURS=6
 
 VOLUME /data
-EXPOSE 80 443
+EXPOSE 8420 8443
 
 CMD ["python", "app.py"]
