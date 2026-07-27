@@ -57,6 +57,27 @@ def static_files(path):
     return send_from_directory(SITE_DIR, path, max_age=max_age)
 
 
+@app.get("/tiles/<int:z>/<int:x>/<int:y>.jpg")
+def tile(z, x, y):
+    """Aerial imagery tiles (NAIP, public domain). Served from the local cache;
+    missing tiles are fetched once on demand so panning beyond the prefetched
+    area still works while online."""
+    if not (10 <= z <= 20) or x < 0 or y < 0 or x >= 2 ** z or y >= 2 ** z:
+        return jsonify({"error": "bad tile"}), 404
+    path = refresher.tile_path(z, x, y)
+    if not os.path.exists(path):
+        try:
+            refresher.fetch_tile(refresher.load_config(), z, x, y)
+        except Exception:
+            return jsonify({"error": "tile unavailable"}), 404
+    with open(path, "rb") as f:
+        magic = f.read(3)
+    mime = "image/png" if magic.startswith(b"\x89P") else "image/jpeg"
+    resp = send_from_directory(os.path.dirname(path), os.path.basename(path), max_age=30 * 86400)
+    resp.mimetype = mime
+    return resp
+
+
 @app.get("/api/status")
 def status():
     st = refresher.read_state("status.json", {}) or {}

@@ -44,6 +44,15 @@ DEFAULT_CONFIG = {
         "requests_hours": 0,   # every run
         "memorials_days": 7,
         "registers_days": 60,
+        "tiles_days": 365,
+    },
+    # aerial imagery basemap: USDA NAIP via the USGS ImageServer (public domain,
+    # ~0.6 m/px). Tiles are cut server-side and cached in DATA_DIR/tiles.
+    "tiles": {
+        "enabled": True,
+        "zooms": [15, 16, 17, 18, 19],
+        "export_url": ("https://imagery.nationalmap.gov/arcgis/rest/services/"
+                       "USGSNAIPImagery/ImageServer/exportImage"),
     },
     # BS&A municipal burial registers (public, sessionless deep links).
     # section_map "oakgrove" applies the Oak Grove code table; anything else keeps
@@ -432,6 +441,83 @@ def register_rows(done, section_map=None):
     return rows
 
 
+# ---------------------------------------------------------------- imagery tiles
+
+MERC_R = 6378137.0
+MERC_HALF = math.pi * MERC_R
+
+
+def ll_to_tile(z, lat, lng):
+    n = 2 ** z
+    x = int((lng + 180.0) / 360.0 * n)
+    lat_r = math.radians(lat)
+    y = int((1.0 - math.log(math.tan(lat_r) + 1.0 / math.cos(lat_r)) / math.pi) / 2.0 * n)
+    return x, y
+
+
+def tile_merc_bbox(z, x, y):
+    n = 2 ** z
+    size = 2 * MERC_HALF / n
+    xmin = -MERC_HALF + x * size
+    ymax = MERC_HALF - y * size
+    return xmin, ymax - size, xmin + size, ymax
+
+
+def tile_path(z, x, y):
+    return os.path.join(DATA_DIR, "tiles", str(z), str(x), f"{y}.img")
+
+
+def fetch_tile(cfg, z, x, y):
+    """Fetch one 256px tile from the NAIP ImageServer and cache it. Returns path or None."""
+    p = tile_path(z, x, y)
+    if os.path.exists(p):
+        return p
+    xmin, ymin, xmax, ymax = tile_merc_bbox(z, x, y)
+    url = (f"{cfg['tiles']['export_url']}?bbox={xmin},{ymin},{xmax},{ymax}"
+           f"&bboxSR=3857&imageSR=3857&size=256,256&format=jpgpng&f=image")
+    body = http_get(url)
+    if len(body) < 500 or body[:1] == b"<":  # error page, not an image
+        raise RuntimeError(f"tile {z}/{x}/{y}: non-image response ({len(body)}B)")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = p + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(body)
+    os.replace(tmp, p)
+    return p
+
+
+def pull_tiles(cfg, registry):
+    """Prefetch the imagery pyramid around every cemetery (one-time; cached forever)."""
+    total_new = errors = 0
+    for cem in registry["cemeteries"]:
+        # bigger cemeteries get a wider imagery box
+        radius = min(650.0, max(300.0, 250.0 + math.sqrt(max(cem.get("interments", 0), 1)) * 6.0))
+        dlat = radius / 110540.0
+        dlng = radius / (111320.0 * math.cos(math.radians(cem["lat"])))
+        new_here = 0
+        for z in cfg["tiles"]["zooms"]:
+            x0, y0 = ll_to_tile(z, cem["lat"] + dlat, cem["lng"] - dlng)
+            x1, y1 = ll_to_tile(z, cem["lat"] - dlat, cem["lng"] + dlng)
+            for x in range(min(x0, x1), max(x0, x1) + 1):
+                for y in range(min(y0, y1), max(y0, y1) + 1):
+                    if os.path.exists(tile_path(z, x, y)):
+                        continue
+                    try:
+                        fetch_tile(cfg, z, x, y)
+                        new_here += 1
+                        time.sleep(0.08)
+                    except RuntimeError as e:
+                        errors += 1
+                        if errors > 200:
+                            log(f"tiles: too many errors, stopping this cycle ({e})")
+                            return total_new
+        if new_here:
+            log(f"tiles: {cem['name']} +{new_here}")
+        total_new += new_here
+    log(f"tiles: {total_new} new tiles cached ({errors} errors)")
+    return total_new
+
+
 # ---------------------------------------------------------------- build
 
 def build_output(cfg, registry):
@@ -511,6 +597,40 @@ def seed_register_cache(cfg):
                 log(f"seeded register for cemetery {cid} from {seed}")
 
 
+def seed_from_baked(registry, ts, now):
+    """First boot with an empty volume: seed per-cemetery caches from the baked
+    cemetery-data.js so we don't re-crawl ~67k memorials we already ship."""
+    if registry.get("seededFromBaked"):
+        return
+    baked = os.path.join(SITE_DIR, "cemetery-data.js")
+    if not os.path.exists(baked):
+        registry["seededFromBaked"] = True
+        return
+    try:
+        with open(baked, encoding="utf-8") as f:
+            raw = f.read()
+        data = json.loads(raw[raw.index("{"):raw.rindex(";")])
+    except (ValueError, OSError) as e:
+        log(f"could not seed from baked dataset: {e}")
+        registry["seededFromBaked"] = True
+        return
+    seeded = 0
+    for cem in data.get("cemeteries", []):
+        cid = str(cem.get("id"))
+        if cem.get("memorials") and not read_state(f"cem/{cid}-memorials.json"):
+            write_state(f"cem/{cid}-memorials.json", cem["memorials"])
+            ts[f"mem_{cid}"] = now
+            registry.setdefault("memorialsAsOf", {})[cid] = data.get("generated", "")
+            seeded += 1
+        if cem.get("requests") and not read_state(f"cem/{cid}-requests.json"):
+            write_state(f"cem/{cid}-requests.json", cem["requests"])
+        if cem.get("roster") and not read_state(f"cem/{cid}-roster.json"):
+            write_state(f"cem/{cid}-roster.json", cem["roster"])
+    if seeded:
+        log(f"seeded caches for {seeded} cemeteries from the baked dataset")
+    registry["seededFromBaked"] = True
+
+
 def run_cycle(cfg, force=False):
     now = time.time()
     cadence = cfg["cadence"]
@@ -518,6 +638,7 @@ def run_cycle(cfg, force=False):
     ts = registry.setdefault("ts", {})
 
     seed_register_cache(cfg)
+    seed_from_baked(registry, ts, now)
 
     # 1. discovery
     if force or now - ts.get("discovery", 0) > cadence["discovery_hours"] * 3600:
@@ -572,6 +693,14 @@ def run_cycle(cfg, force=False):
                 ts[key] = now
             except RuntimeError as e:
                 log(f"register pull failed uid={reg['uid']}: {e}")
+
+    # 5. aerial imagery tiles — incremental every cycle (already-cached tiles cost
+    # nothing to skip, and newly discovered cemeteries get their imagery next run)
+    if cfg.get("tiles", {}).get("enabled"):
+        try:
+            pull_tiles(cfg, registry)
+        except RuntimeError as e:
+            log(f"tile prefetch failed (will retry next cycle): {e}")
 
     write_state("registry.json", registry)
     build_output(cfg, registry)

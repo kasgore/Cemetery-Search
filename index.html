@@ -206,6 +206,7 @@
   #map-canvas { display: block; width: 100%; height: 66vh; }
   .map-buttons { position: absolute; right: 8px; top: 8px; display: flex; flex-direction: column; gap: 6px; }
   .map-buttons button { width: 42px; height: 42px; font-size: 1.1rem; border: 1px solid var(--ink); background: rgba(255,253,247,0.92); cursor: pointer; border-radius: 2px; }
+  .map-buttons button.on { background: var(--moss-dark); color: var(--bg); }
   .map-legend { font-family: var(--font-mono); font-size: 0.62rem; color: var(--ink-soft); display: flex; gap: 12px; flex-wrap: wrap; padding: 7px 2px; }
   .map-legend .dot { width: 9px; height: 9px; display: inline-block; border-radius: 50%; margin-right: 3px; vertical-align: -1px; }
 
@@ -316,6 +317,7 @@
         <button id="map-zoom-out" title="Zoom out">&minus;</button>
         <button id="map-locate" title="Center on me">&#x25C9;</button>
         <button id="map-fit" title="Fit cemetery">&#x26F6;</button>
+        <button id="map-imagery" title="Aerial imagery on/off">&#x1F6F0;</button>
       </div>
     </div>
     <div class="map-legend">
@@ -325,7 +327,7 @@
       <span><span class="dot" style="background:#2b5c7a;"></span>you</span>
       <span><span class="dot" style="background:#b9b09c;"></span>lot grid</span>
     </div>
-    <div class="small" style="padding:4px 2px;">Tap a marker for details. Grid positions come from the city plat maps georeferenced with 450+ GPS-tagged memorials; accuracy varies by section (shown per grave).</div>
+    <div class="small" style="padding:4px 2px;">Tap a marker for details. The aerial layer is USGS NAIP photography (🛰 toggles it); grid positions come from city plat maps and GPS-tagged memorials — accuracy varies by cemetery and is shown per grave.</div>
   </section>
 
   <!-- SEARCH -->

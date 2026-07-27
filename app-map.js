@@ -12,6 +12,52 @@
 // low enough to fit the whole multi-cemetery region on a phone canvas
 const MIN_SCALE = 0.002;
 
+/* ---------------- aerial imagery (NAIP, public domain) ---------------- */
+const NAIP_EXPORT = 'https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer/exportImage';
+const MERC_R = 6378137, MERC_HALF = Math.PI * MERC_R;
+const tileCache = new Map();      // 'z/x/y' -> {img, state:'loading'|'ok'|'err', direct}
+let serverTilesOk = (typeof location !== 'undefined' && location.protocol !== 'file:');
+const TILE_CACHE_MAX = 400;
+
+function lngToTileX(z, lng) { return (lng + 180) / 360 * Math.pow(2, z); }
+function latToTileY(z, lat) {
+  const r = lat * Math.PI / 180;
+  return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z);
+}
+function tileToLng(z, x) { return x / Math.pow(2, z) * 360 - 180; }
+function tileToLat(z, y) {
+  const n = Math.PI - 2 * Math.PI * y / Math.pow(2, z);
+  return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+}
+function tileDirectUrl(z, x, y) {
+  const n = Math.pow(2, z), size = 2 * MERC_HALF / n;
+  const xmin = -MERC_HALF + x * size, ymax = MERC_HALF - y * size;
+  return `${NAIP_EXPORT}?bbox=${xmin},${ymax - size},${xmin + size},${ymax}&bboxSR=3857&imageSR=3857&size=256,256&format=jpgpng&f=image`;
+}
+function getTile(z, x, y, onReady) {
+  const key = z + '/' + x + '/' + y;
+  let t = tileCache.get(key);
+  if (t) { tileCache.delete(key); tileCache.set(key, t); return t; } // LRU touch
+  t = { img: new Image(), state: 'loading', direct: !serverTilesOk };
+  tileCache.set(key, t);
+  if (tileCache.size > TILE_CACHE_MAX) {
+    for (const [k, v] of tileCache) {
+      if (v.state !== 'loading') { tileCache.delete(k); break; }
+    }
+  }
+  t.img.onload = () => { t.state = 'ok'; onReady && onReady(); };
+  t.img.onerror = () => {
+    if (!t.direct) {
+      // server has no /tiles route (static hosting) — fall back to NAIP directly
+      serverTilesOk = false;
+      t.direct = true;
+      t.img.src = tileDirectUrl(z, x, y);
+    } else t.state = 'err';
+  };
+  t.img.src = t.direct ? tileDirectUrl(z, x, y) : ('./tiles/' + z + '/' + x + '/' + y + '.jpg');
+  return t;
+}
+
 function MapView(canvas, proj, opts) {
   this.canvas = canvas;
   this.ctx = canvas.getContext('2d');
@@ -22,11 +68,56 @@ function MapView(canvas, proj, opts) {
   this.user = null;                 // {lat,lng,acc}
   this.layers = { lots: [], blocks: [], roads: [], sections: [], cems: [], targets: [] };
   this.highlight = null;            // {lat,lng,acc}
+  this.imagery = opts.imagery !== false;
+  this._imageryDrawn = false;
+  this._redrawQueued = false;
   this._pointers = new Map();
   this._lastPinch = null;
   this._bindings();
   this.resize();
 }
+
+MapView.prototype.queueRedraw = function () {
+  if (this._redrawQueued) return;
+  this._redrawQueued = true;
+  requestAnimationFrame(() => { this._redrawQueued = false; this.draw(); });
+};
+
+MapView.prototype.drawImagery = function () {
+  const ctx = this.ctx, w = this.w, h = this.h;
+  this._imageryDrawn = false;
+  if (!this.imagery) return;
+  const tl = this.screenToWorld(0, 0), br = this.screenToWorld(w, h);
+  const llTL = this.proj.toLL(tl.e, tl.n), llBR = this.proj.toLL(br.e, br.n);
+  if (!isFinite(llTL.lat) || !isFinite(llBR.lat)) return;
+  // pick the zoom whose native resolution best matches the current scale
+  const midLat = (llTL.lat + llBR.lat) / 2;
+  let z = Math.ceil(Math.log2(156543.03 * Math.cos(midLat * Math.PI / 180) * this.scale));
+  z = Math.min(19, Math.max(13, z));
+  const x0 = Math.floor(lngToTileX(z, llTL.lng)), x1 = Math.floor(lngToTileX(z, llBR.lng));
+  const y0 = Math.floor(latToTileY(z, llTL.lat)), y1 = Math.floor(latToTileY(z, llBR.lat));
+  if ((x1 - x0 + 1) * (y1 - y0 + 1) > 120) return; // safety net
+  const onReady = () => this.queueRedraw();
+  for (let x = x0; x <= x1; x++) {
+    for (let y = y0; y <= y1; y++) {
+      if (x < 0 || y < 0 || x >= Math.pow(2, z) || y >= Math.pow(2, z)) continue;
+      const t = getTile(z, x, y, onReady);
+      if (t.state !== 'ok' || !t.img.naturalWidth) continue;
+      const nw = this.llToScreen(tileToLat(z, y), tileToLng(z, x));
+      const se = this.llToScreen(tileToLat(z, y + 1), tileToLng(z, x + 1));
+      try {
+        ctx.drawImage(t.img, nw.x, nw.y, se.x - nw.x, se.y - nw.y);
+        this._imageryDrawn = true;
+      } catch (e) { /* decode edge case — skip tile */ }
+    }
+  }
+  if (this._imageryDrawn) {
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.font = '9px JetBrains Mono, monospace';
+    const txt = 'USGS NAIP imagery';
+    ctx.fillText(txt, w - ctx.measureText(txt).width - 6, h - 5);
+  }
+};
 
 MapView.prototype.resize = function () {
   const dpr = window.devicePixelRatio || 1;
@@ -87,10 +178,18 @@ MapView.prototype.draw = function () {
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = '#ece5d4';
   ctx.fillRect(0, 0, w, h);
+  this.drawImagery();
+  const onImg = this._imageryDrawn;
 
   const s = this.scale;
   const L = this.layers;
   const inView = p => p.x > -25 && p.y > -25 && p.x < w + 25 && p.y < h + 25;
+  const halo = (txt, x, y) => { // readable labels on top of photography
+    if (!onImg) return;
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth = 3;
+    ctx.strokeText(txt, x, y);
+  };
 
   // lot grid
   if (s > 0.55 && L.lots.length) {
@@ -99,16 +198,24 @@ MapView.prototype.draw = function () {
     for (const pt of L.lots) {
       const p = this.llToScreen(pt.lat, pt.lng);
       if (!inView(p)) continue;
-      ctx.fillStyle = 'rgba(148,138,118,0.75)';
-      ctx.fillRect(p.x - 1.2, p.y - 1.2, 2.4, 2.4);
+      if (onImg) { // white pip with dark rim reads on any photo
+        ctx.fillStyle = 'rgba(20,24,15,0.9)';
+        ctx.fillRect(p.x - 1.9, p.y - 1.9, 3.8, 3.8);
+        ctx.fillStyle = 'rgba(255,253,247,0.95)';
+        ctx.fillRect(p.x - 1.1, p.y - 1.1, 2.2, 2.2);
+      } else {
+        ctx.fillStyle = 'rgba(148,138,118,0.75)';
+        ctx.fillRect(p.x - 1.2, p.y - 1.2, 2.4, 2.4);
+      }
       if (showNums && pt.label) {
-        ctx.fillStyle = 'rgba(80,72,58,0.85)';
+        halo(pt.label, p.x + 3, p.y + 3);
+        ctx.fillStyle = onImg ? 'rgba(20,24,15,0.95)' : 'rgba(80,72,58,0.85)';
         ctx.fillText(pt.label, p.x + 3, p.y + 3);
       }
     }
   }
-  // roads
-  if (s > 0.7) {
+  // roads (redundant over photography)
+  if (s > 0.7 && !onImg) {
     ctx.fillStyle = 'rgba(110,101,87,0.5)';
     ctx.font = '9px JetBrains Mono, monospace';
     for (const pt of L.roads) {
@@ -118,31 +225,35 @@ MapView.prototype.draw = function () {
   }
   // block letters
   if (s > 0.8) {
-    ctx.fillStyle = 'rgba(74,93,58,0.8)';
     ctx.font = 'bold ' + Math.min(15, Math.max(10, s * 4)) + 'px JetBrains Mono, monospace';
     for (const pt of L.blocks) {
       const p = this.llToScreen(pt.lat, pt.lng);
-      if (inView(p)) ctx.fillText(pt.label, p.x, p.y);
+      if (!inView(p)) continue;
+      halo(pt.label, p.x, p.y);
+      ctx.fillStyle = onImg ? 'rgba(30,44,22,0.95)' : 'rgba(74,93,58,0.8)';
+      ctx.fillText(pt.label, p.x, p.y);
     }
   }
   // section names
   ctx.font = 'italic 600 ' + Math.min(17, Math.max(11, s * 9)) + 'px Cormorant Garamond, serif';
-  ctx.fillStyle = 'rgba(44,58,36,0.55)';
   if (s > 0.5) {
     for (const pt of L.sections) {
       const p = this.llToScreen(pt.lat, pt.lng);
       if (!inView(p)) continue;
       const tw = ctx.measureText(pt.label).width;
+      halo(pt.label, p.x - tw / 2, p.y);
+      ctx.fillStyle = onImg ? 'rgba(30,44,22,0.95)' : 'rgba(44,58,36,0.55)';
       ctx.fillText(pt.label, p.x - tw / 2, p.y);
     }
   }
   // cemetery names (visible when zoomed out)
   ctx.font = 'italic 700 15px Cormorant Garamond, serif';
-  ctx.fillStyle = 'rgba(20,24,15,0.8)';
   for (const pt of L.cems) {
     const p = this.llToScreen(pt.lat, pt.lng);
     if (p.x < -150 || p.y < -30 || p.x > w + 150 || p.y > h + 30) continue;
     const tw = ctx.measureText(pt.label).width;
+    halo(pt.label, p.x - tw / 2, p.y - 10);
+    ctx.fillStyle = 'rgba(20,24,15,0.9)';
     ctx.fillText(pt.label, p.x - tw / 2, p.y - 10);
     ctx.beginPath();
     ctx.arc(p.x, p.y, 2.6, 0, Math.PI * 2);

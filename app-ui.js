@@ -531,7 +531,7 @@ function openGuide(target, model) {
   compass.enable();
   wakeOn();
 
-  if (!guideMap) guideMap = new MapView($('guide-minimap'), gproj, {});
+  if (!guideMap) guideMap = new MapView($('guide-minimap'), gproj, { imagery: imageryPref() });
   guideMap.layers = buildLayers(model ? [String(model.cem.id)] : activeCemList(), target);
   guideMap.highlight = target.loc ? { lat: target.loc.lat, lng: target.loc.lng, acc: target.loc.acc } : null;
   guideMap.resize();
@@ -713,9 +713,11 @@ function buildLayers(cemIds, soloTarget) {
 
 /* ---------------- main map ---------------- */
 let mainMap = null;
+function imageryPref() { return store.prefs.imagery !== false; }
 function ensureMap() {
   if (mainMap) return;
   mainMap = new MapView($('map-canvas'), gproj, {
+    imagery: imageryPref(),
     onTap: (x, y) => {
       const hit = mainMap.hitTest(x, y);
       if (hit && hit.ref) openGuide(hit.ref, hit.model);
@@ -724,6 +726,15 @@ function ensureMap() {
   $('map-zoom-in').addEventListener('click', () => mainMap.zoomAt(mainMap.w / 2, mainMap.h / 2, 1.35));
   $('map-zoom-out').addEventListener('click', () => mainMap.zoomAt(mainMap.w / 2, mainMap.h / 2, 0.74));
   $('map-fit').addEventListener('click', fitMap);
+  $('map-imagery').classList.toggle('on', imageryPref());
+  $('map-imagery').addEventListener('click', () => {
+    store.prefs.imagery = !imageryPref();
+    save();
+    mainMap.imagery = imageryPref();
+    if (guideMap) guideMap.imagery = imageryPref();
+    $('map-imagery').classList.toggle('on', imageryPref());
+    mainMap.draw();
+  });
   $('map-locate').addEventListener('click', () => {
     geo.on();
     if (geo.pos) mainMap.centerOn(geo.pos.lat, geo.pos.lng, Math.max(mainMap.scale, 3));
