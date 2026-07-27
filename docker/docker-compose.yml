@@ -1,0 +1,13 @@
+# Cemetery Search — Portainer stack
+# Serves the static app with nginx. Extract cemetery-search-site.tar.gz into
+# ./site next to this file (see README.md), then deploy the stack.
+services:
+  cemetery-search:
+    image: nginx:1.27-alpine
+    container_name: cemetery-search
+    restart: unless-stopped
+    ports:
+      - "8420:80"
+    volumes:
+      - ./site:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro

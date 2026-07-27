@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#1a1f1a">
+<title>Cemetery Search — Grave Finder</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icons/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<style>
+  /* ==========================================================
+     Cemetery Search — Grave Finder (Oak Grove field edition)
+     Weathered field-journal aesthetic; tuned for outdoor
+     legibility: high contrast, large touch targets.
+     ========================================================== */
+  @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+  :root {
+    --bg: #f2ecdf;
+    --bg-deep: #e3dac6;
+    --ink: #14180f;
+    --ink-soft: #333a2c;
+    --moss: #4a5d3a;
+    --moss-dark: #2c3a24;
+    --stone: #6e6557;
+    --stone-light: #a89e8a;
+    --rust: #8b3a1f;
+    --gold: #a07a2c;
+    --sky: #2b5c7a;
+    --line: #9a8e75;
+    --paper-shadow: rgba(54, 47, 30, 0.12);
+    --font-display: 'Cormorant Garamond', 'Times New Roman', serif;
+    --font-mono: 'JetBrains Mono', 'Courier New', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: var(--font-display);
+    background-color: var(--bg);
+    background-image:
+      radial-gradient(at 20% 10%, rgba(74,93,58,0.08) 0%, transparent 50%),
+      radial-gradient(at 80% 90%, rgba(139,58,31,0.05) 0%, transparent 50%);
+    color: var(--ink);
+    min-height: 100vh;
+    line-height: 1.45;
+    font-size: 17px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Header */
+  header {
+    padding: max(14px, env(safe-area-inset-top)) 16px 10px;
+    border-bottom: 2px solid var(--ink);
+    background-color: var(--bg-deep);
+  }
+  .header-inner { max-width: 1100px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  h1 { font-weight: 600; font-size: clamp(1.25rem, 4.5vw, 1.9rem); line-height: 1.05; font-style: italic; white-space: nowrap; }
+  h1 .ornament { font-style: normal; color: var(--moss); margin: 0 4px; }
+  .subtitle { font-family: var(--font-mono); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.18em; color: var(--stone); margin-top: 2px; }
+  .head-stats { font-family: var(--font-mono); font-size: 0.68rem; color: var(--ink-soft); text-align: right; line-height: 1.5; }
+  .head-stats strong { color: var(--moss-dark); font-size: 0.95rem; }
+  #gps-chip {
+    display: inline-block; font-family: var(--font-mono); font-size: 0.6rem;
+    padding: 2px 8px; border: 1px solid var(--stone-light); border-radius: 10px; color: var(--stone);
+    cursor: pointer; user-select: none;
+  }
+  #gps-chip.on { border-color: var(--moss); color: var(--moss-dark); background: rgba(74,93,58,0.1); }
+  #gps-chip.err { border-color: var(--rust); color: var(--rust); }
+
+  /* Tabs */
+  nav.tabs {
+    position: sticky; top: 0; z-index: 40;
+    display: flex; gap: 0; overflow-x: auto;
+    background-color: var(--bg-deep);
+    border-bottom: 1px solid var(--line);
+    padding: 0 8px;
+    scrollbar-width: none;
+  }
+  nav.tabs::-webkit-scrollbar { display: none; }
+  .tab {
+    background: none; border: none; flex: 1 0 auto;
+    padding: 13px 14px; font-family: var(--font-mono); font-size: 0.72rem;
+    text-transform: uppercase; letter-spacing: 0.1em; cursor: pointer; color: var(--stone);
+    border-bottom: 3px solid transparent; white-space: nowrap;
+  }
+  .tab.active { color: var(--ink); border-bottom-color: var(--moss); background-color: var(--bg); }
+
+  main { max-width: 1100px; margin: 0 auto; padding: 14px 12px calc(60px + env(safe-area-inset-bottom)); }
+  .panel { display: none; }
+  .panel.active { display: block; animation: fadeIn 0.25s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+
+  /* Cards */
+  .card {
+    background-color: rgba(255,253,247,0.72);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    padding: 16px;
+    margin-bottom: 14px;
+    box-shadow: 2px 2px 0 var(--paper-shadow);
+  }
+  .card h2 { font-size: 1.3rem; font-weight: 600; margin-bottom: 8px; color: var(--moss-dark); }
+  .card h3 { font-size: 1.05rem; font-weight: 600; margin: 10px 0 6px; }
+  .card p { margin-bottom: 8px; color: var(--ink-soft); }
+  .card ol, .card ul { margin: 8px 0 8px 22px; color: var(--ink-soft); }
+  .card li { margin-bottom: 5px; }
+  .card a { color: var(--moss-dark); text-decoration-color: var(--moss); text-underline-offset: 3px; }
+  .card code, .mono { font-family: var(--font-mono); font-size: 0.82em; }
+  .small { font-size: 0.85rem; color: var(--stone); }
+
+  .badge {
+    display: inline-block; font-family: var(--font-mono); font-size: 0.6rem; vertical-align: middle;
+    text-transform: uppercase; letter-spacing: 0.1em; padding: 2px 7px; border-radius: 2px;
+    background-color: var(--moss); color: var(--bg);
+  }
+  .badge.gold { background-color: var(--gold); }
+  .badge.rust { background-color: var(--rust); }
+  .badge.stone { background-color: var(--stone); }
+  .badge.sky { background-color: var(--sky); }
+  .badge.outline { background: none; border: 1px solid var(--stone-light); color: var(--stone); }
+
+  /* Buttons */
+  button.primary, button.secondary, a.btnlike {
+    font-family: var(--font-mono); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em;
+    padding: 12px 18px; border: 1.5px solid var(--ink); cursor: pointer; border-radius: 2px;
+    text-decoration: none; display: inline-block; text-align: center;
+  }
+  button.primary { background-color: var(--moss-dark); color: var(--bg); border-color: var(--moss-dark); }
+  button.primary:active { background-color: var(--ink); }
+  button.secondary { background-color: transparent; color: var(--ink); }
+  button.secondary:active { background-color: var(--ink); color: var(--bg); }
+  button.mini {
+    font-family: var(--font-mono); font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.08em;
+    padding: 7px 10px; border: 1px solid var(--stone-light); background: rgba(255,253,247,0.7);
+    color: var(--ink-soft); cursor: pointer; border-radius: 2px;
+  }
+  button.mini.on { border-color: var(--moss-dark); background: var(--moss-dark); color: var(--bg); }
+  .button-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+
+  /* Controls bar */
+  .controls {
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    margin-bottom: 12px; padding: 10px;
+    background-color: rgba(255,253,247,0.72); border: 1px solid var(--line);
+  }
+  .controls label { font-family: var(--font-mono); font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--stone); display: flex; align-items: center; gap: 5px; }
+  .controls input[type="text"], .controls select, .databox textarea, input.texty {
+    font-family: var(--font-mono); font-size: 0.8rem; padding: 8px 10px;
+    background-color: var(--bg); border: 1px solid var(--stone-light); color: var(--ink); border-radius: 2px;
+  }
+  .controls input[type="checkbox"] { accent-color: var(--moss-dark); width: 18px; height: 18px; }
+
+  /* Section groups & target cards */
+  .section-group { margin-bottom: 22px; }
+  .section-header {
+    display: flex; align-items: baseline; gap: 10px; padding: 9px 12px;
+    background-color: var(--moss-dark); color: var(--bg); position: sticky; top: 45px; z-index: 5;
+  }
+  .section-header h2 { font-size: 1.2rem; font-weight: 600; font-style: italic; }
+  .section-header .meta { font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.1em; color: var(--bg-deep); margin-left: auto; white-space: nowrap; }
+
+  .tcard {
+    background-color: rgba(255,253,247,0.8);
+    border: 1px solid var(--line); border-top: none;
+    padding: 10px 12px 10px 14px; position: relative;
+  }
+  .tcard::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--stone-light); }
+  .tcard.st-done::before { background: var(--moss); }
+  .tcard.st-nostone::before { background: var(--gold); }
+  .tcard.st-notfound::before { background: var(--rust); }
+  .tcard.st-done { opacity: 0.62; }
+  .tcard.st-done .tname { text-decoration: line-through; }
+  .tname { font-size: 1.22rem; font-weight: 600; line-height: 1.15; }
+  .tname .years { font-size: 0.85rem; font-weight: 400; color: var(--stone); font-style: italic; margin-left: 6px; white-space: nowrap; }
+  .tmeta { font-family: var(--font-mono); font-size: 0.7rem; color: var(--ink-soft); margin-top: 3px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .tmeta .lbl { color: var(--stone); font-size: 0.6rem; text-transform: uppercase; margin-right: 3px; }
+  .loc-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-family: var(--font-mono); font-size: 0.66rem; margin-top: 5px;
+    padding: 3px 8px; border-radius: 2px; border: 1px solid var(--stone-light); color: var(--ink-soft);
+    background: rgba(255,253,247,0.7);
+  }
+  .loc-chip .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot.q-lot { background: #2e7d32; }
+  .dot.q-block { background: #a07a2c; }
+  .dot.q-section { background: #8b3a1f; }
+  .dot.q-none { background: #999; }
+  .reqnote { font-size: 0.85rem; font-style: italic; color: var(--ink-soft); margin-top: 5px; border-left: 2px solid var(--gold); padding-left: 8px; }
+  .trow-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .neighbors { margin-top: 8px; border-top: 1px dashed var(--stone-light); padding-top: 7px; display: none; }
+  .neighbors.open { display: block; }
+  .neighbors h4 { font-family: var(--font-mono); font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--stone); margin-bottom: 5px; }
+  .nb { font-size: 0.92rem; padding: 3px 0; display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+  .nb .cam { font-size: 0.8rem; }
+  .nb a { color: var(--moss-dark); }
+  .nb .g { font-family: var(--font-mono); font-size: 0.62rem; color: var(--stone); }
+
+  .empty-state { text-align: center; padding: 44px 16px; color: var(--stone); font-style: italic; font-size: 1.1rem; }
+  .empty-state .ornament { font-size: 1.8rem; color: var(--stone-light); margin-bottom: 8px; }
+
+  /* Map */
+  #map-wrap { position: relative; border: 1px solid var(--line); background: #ece5d4; touch-action: none; }
+  #map-canvas { display: block; width: 100%; height: 66vh; }
+  .map-buttons { position: absolute; right: 8px; top: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .map-buttons button { width: 42px; height: 42px; font-size: 1.1rem; border: 1px solid var(--ink); background: rgba(255,253,247,0.92); cursor: pointer; border-radius: 2px; }
+  .map-legend { font-family: var(--font-mono); font-size: 0.62rem; color: var(--ink-soft); display: flex; gap: 12px; flex-wrap: wrap; padding: 7px 2px; }
+  .map-legend .dot { width: 9px; height: 9px; display: inline-block; border-radius: 50%; margin-right: 3px; vertical-align: -1px; }
+
+  /* Guide overlay */
+  #guide {
+    position: fixed; inset: 0; z-index: 100; display: none; flex-direction: column;
+    background: var(--bg);
+    padding: max(10px, env(safe-area-inset-top)) 14px calc(14px + env(safe-area-inset-bottom));
+    overflow-y: auto;
+  }
+  #guide.open { display: flex; }
+  .guide-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .guide-name { font-size: 1.5rem; font-weight: 700; line-height: 1.1; }
+  .guide-plot { font-family: var(--font-mono); font-size: 0.72rem; color: var(--ink-soft); margin-top: 3px; }
+  #guide-close { font-size: 1.6rem; background: none; border: none; cursor: pointer; color: var(--stone); padding: 4px 10px; }
+  .nav-zone { text-align: center; margin: 8px 0 4px; }
+  #arrow-canvas { width: 180px; height: 180px; }
+  .nav-dist { font-family: var(--font-mono); font-size: 2rem; font-weight: 700; color: var(--moss-dark); }
+  .nav-dist .unit { font-size: 0.9rem; color: var(--stone); }
+  .nav-sub { font-family: var(--font-mono); font-size: 0.66rem; color: var(--stone); margin-top: 2px; min-height: 1em; }
+  #guide-minimap { width: 100%; height: 34vh; border: 1px solid var(--line); background: #ece5d4; touch-action: none; }
+  .guide-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+  .guide-actions .wide { grid-column: 1 / -1; }
+  #guide .neighbors { display: block; margin-top: 10px; }
+
+  /* Search */
+  #search-input { width: 100%; font-size: 1rem; padding: 12px; }
+  .sres { padding: 9px 4px; border-bottom: 1px dashed var(--stone-light); }
+  .sres .tname { font-size: 1.05rem; }
+
+  /* Data tab */
+  .databox textarea { width: 100%; min-height: 110px; resize: vertical; }
+  .drop-zone {
+    margin-top: 8px; border: 1.5px dashed var(--stone-light); background-color: rgba(255,253,247,0.4);
+    padding: 12px; text-align: center; cursor: pointer; font-family: var(--font-mono);
+    font-size: 0.68rem; color: var(--stone); text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .drop-zone.dragover { border-color: var(--moss-dark); background-color: rgba(74,93,58,0.12); }
+  .bkm { display: inline-block; padding: 8px 12px; background: var(--bg-deep); border: 1px solid var(--line); font-family: var(--font-mono); font-size: 0.7rem; color: var(--ink); text-decoration: none; }
+
+  /* Toast */
+  #toast {
+    position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+    background: var(--ink); color: var(--bg); font-family: var(--font-mono); font-size: 0.72rem;
+    padding: 10px 16px; border-radius: 2px; z-index: 200; display: none; max-width: 90vw; text-align: center;
+  }
+
+  footer { text-align: center; padding: 18px; font-family: var(--font-mono); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.16em; color: var(--stone); border-top: 1px solid var(--line); margin-top: 30px; }
+
+  @media (min-width: 700px) {
+    main { padding-top: 20px; }
+    .guide-inner { max-width: 700px; margin: 0 auto; width: 100%; }
+  }
+  @media print {
+    nav.tabs, .controls, .trow-actions, header, footer, .map-buttons { display: none !important; }
+    .panel { display: block !important; }
+    .tcard { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div>
+      <h1>Cemetery Search <span class="ornament">&#x2767;</span></h1>
+      <div class="subtitle" id="subtitle">Oak Grove Cemetery &middot; St. Louis, MI</div>
+    </div>
+    <div class="head-stats">
+      <span id="gps-chip" title="Tap to toggle GPS">GPS off</span><br>
+      <strong id="stat-open">0</strong> to find &middot; <strong id="stat-done">0</strong> done
+    </div>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="walk">&#x2693; Walk</button>
+  <button class="tab" data-tab="map">&#x25CE; Map</button>
+  <button class="tab" data-tab="search">&#x2315; Search</button>
+  <button class="tab" data-tab="data">&#x270E; Data</button>
+  <button class="tab" data-tab="help">? Help</button>
+</nav>
+
+<main>
+
+  <!-- WALK -->
+  <section class="panel active" id="panel-walk">
+    <div class="controls">
+      <input type="text" id="walk-filter" placeholder="filter name / plot..." style="flex:1; min-width:110px;">
+      <label>Sort <select id="walk-sort">
+        <option value="route">Walking route</option>
+        <option value="near">Nearest first</option>
+        <option value="name">Surname</option>
+        <option value="conf">Best located first</option>
+      </select></label>
+      <label><input type="checkbox" id="walk-hidedone" checked> hide finished</label>
+    </div>
+    <div id="walk-list"></div>
+  </section>
+
+  <!-- MAP -->
+  <section class="panel" id="panel-map">
+    <div id="map-wrap">
+      <canvas id="map-canvas"></canvas>
+      <div class="map-buttons">
+        <button id="map-zoom-in" title="Zoom in">+</button>
+        <button id="map-zoom-out" title="Zoom out">&minus;</button>
+        <button id="map-locate" title="Center on me">&#x25C9;</button>
+        <button id="map-fit" title="Fit cemetery">&#x26F6;</button>
+      </div>
+    </div>
+    <div class="map-legend">
+      <span><span class="dot" style="background:#8b3a1f;"></span>to find</span>
+      <span><span class="dot" style="background:#2e7d32;"></span>done</span>
+      <span><span class="dot" style="background:#a07a2c;"></span>no stone / issue</span>
+      <span><span class="dot" style="background:#2b5c7a;"></span>you</span>
+      <span><span class="dot" style="background:#b9b09c;"></span>lot grid</span>
+    </div>
+    <div class="small" style="padding:4px 2px;">Tap a marker for details. Grid positions come from the city plat maps georeferenced with 450+ GPS-tagged memorials; accuracy varies by section (shown per grave).</div>
+  </section>
+
+  <!-- SEARCH -->
+  <section class="panel" id="panel-search">
+    <div class="card">
+      <input type="text" id="search-input" class="texty" placeholder="Search any name — all 7,600+ burials, works offline">
+      <div class="small" style="margin-top:6px;">Searches Find a Grave memorials and the city burial register. Tap a result to locate it on the map or start guidance.</div>
+    </div>
+    <div id="search-results"></div>
+  </section>
+
+  <!-- DATA -->
+  <section class="panel" id="panel-data">
+    <div class="card" id="dataset-card">
+      <h2>Loaded Dataset</h2>
+      <div id="dataset-info" class="mono small">No dataset.</div>
+      <div class="button-row">
+        <button class="secondary" id="btn-export">Export progress</button>
+        <button class="secondary" id="btn-import">Import progress</button>
+        <input type="file" id="import-file" accept=".json" style="display:none;">
+        <button class="secondary" id="btn-reset">Reset progress</button>
+        <button class="secondary" id="btn-revert">Revert to baked dataset</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Refresh photo requests</h2>
+      <p>Requests change as people fulfill and add them. Two ways to refresh:</p>
+      <ol>
+        <li><strong>Official download:</strong> open the <a href="https://www.findagrave.com/photo-request/search/cemetery/1252" target="_blank" rel="noopener">photo request page</a>, tap <em>Download List</em> (CSV or XLSX), then drop the file below.</li>
+        <li><strong>One-tap bookmarklet:</strong> drag this to your bookmarks bar (on desktop), or copy its code into a new bookmark: <a href="#" class="bkm" id="bkm-requests">&#x2693; Grab photo requests</a>. Open the photo request page, tap the bookmark, and it copies fresh data — paste it below.</li>
+      </ol>
+      <div class="databox">
+        <textarea id="fag-input" placeholder="Paste bookmarklet JSON or CSV text here — or drop the downloaded file on the zone below."></textarea>
+        <div class="drop-zone" id="fag-drop">Drop photo-requests file (.xlsx / .csv / .json) — or tap to browse
+          <input type="file" id="fag-file" accept=".xlsx,.xls,.csv,.json,.ods" style="display:none;">
+        </div>
+        <div class="button-row">
+          <button class="primary" id="btn-fag-apply">Apply requests update</button>
+          <span class="mono small" id="fag-status"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Update burial register / memorials</h2>
+      <p class="small">The app ships with the full city burial register (BS&amp;A) and Find a Grave memorial index baked in. To refresh memorials (new GPS pins improve accuracy), use this bookmarklet on any Find a Grave page for this cemetery, then paste the result: <a href="#" class="bkm" id="bkm-memorials">&#x25CE; Grab memorial index</a></p>
+      <div class="databox">
+        <textarea id="mem-input" placeholder="Paste memorial-index JSON from the bookmarklet here."></textarea>
+        <div class="button-row">
+          <button class="primary" id="btn-mem-apply">Apply memorial update</button>
+          <span class="mono small" id="mem-status"></span>
+        </div>
+      </div>
+      <p class="small" style="margin-top:8px;">BS&amp;A register: paste rows from a clerk spreadsheet or BS&amp;A record pages below (optional — usually not needed).</p>
+      <div class="databox">
+        <textarea id="bsa-input" placeholder="Paste BS&A / clerk roster rows here (Name, dates, Section Block Lot Grave)."></textarea>
+        <div class="drop-zone" id="bsa-drop">Drop roster file (.xlsx / .csv) — or tap to browse
+          <input type="file" id="bsa-file" accept=".xlsx,.xls,.csv,.ods" style="display:none;">
+        </div>
+        <div class="button-row">
+          <button class="primary" id="btn-bsa-apply">Apply register update</button>
+          <span class="mono small" id="bsa-status"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Install on your phone</h2>
+      <p><strong>iPhone:</strong> open this page in Safari → Share button → <em>Add to Home Screen</em>. Install it <em>before</em> you build up progress: the installed app keeps its own storage and is exempt from Safari's 7-day cleanup. (Already have progress in Safari? <em>Export progress</em> there, then <em>Import progress</em> inside the installed app — the browser tab and the installed app do not share saves.)</p>
+      <p><strong>Android:</strong> Chrome menu (&#8942;) → <em>Add to Home screen</em> (or tap the install prompt).</p>
+      <p class="small">Once installed it works fully offline — all 7,600+ records, the maps, and your progress live on the phone. GPS needs no signal; only the "Open Find a Grave" links need data.</p>
+    </div>
+  </section>
+
+  <!-- HELP -->
+  <section class="panel" id="panel-help">
+    <div class="card">
+      <h2>How this app finds graves</h2>
+      <p>Every photo request is located by the best available evidence, in this order:</p>
+      <ol>
+        <li><span class="badge">GPS</span> the memorial's own pin (rare — most requests have none);</li>
+        <li><span class="badge">LOT</span> the exact lot position from the <strong>city plat maps</strong>, georeferenced with 450+ GPS-tagged memorials (usually within a few graves);</li>
+        <li><span class="badge gold">BLOCK</span> the block/row when the lot isn't drawn (10–30 m);</li>
+        <li><span class="badge rust">SECTION</span> the section area only (~40 m) — use neighbors to close in.</li>
+      </ol>
+      <p>The colored dot on each card shows which level you have, with an accuracy estimate in meters.</p>
+    </div>
+    <div class="card">
+      <h2>Field technique</h2>
+      <ul>
+        <li><strong>Use the neighbors list.</strong> Tap <em>Neighbors</em> on any target: people buried in the same lot and the adjacent lots, with a &#x1F4F7; marking ones whose stones are already photographed on Find a Grave. Walk to a photographed neighbor (tap it to see the stone's photo), then count stones — the spouse is very often in the same lot even if unmarked.</li>
+        <li><strong>Lot geometry:</strong> lots climb <em>south to north</em> at about 3 m per lot number; odd lots sit west, even lots east, in pairs. Blocks are strips labeled at one end. Graves are ~2.5 ft wide, lots hold 4–8.</li>
+        <li><strong>No stone?</strong> That's a real answer: photograph the spot in context with surrounding stones and note "unmarked" in the caption when fulfilling — or mark <em>No stone</em> here and flag the request on Find a Grave so the requester learns the outcome.</li>
+        <li><strong>Reading worn stones:</strong> raking light (sun ~30&deg; across the face) is everything. East-facing stones read best late morning; west-facing early afternoon. A spray bottle of water raises contrast; a mirror or foil board throws light on shaded faces.</li>
+        <li><strong>Kit:</strong> water spray, soft brush, grass clippers, trowel, mirror/foil, battery pack.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>Compass &amp; GPS notes</h2>
+      <ul>
+        <li>Phone GPS is good to 3–8 m outdoors — it gets you to the right lot/row, then your eyes take over.</li>
+        <li>The arrow needs the compass permission (it will ask on first use). Hold the phone flat; keep away from cars and metal fences. True-north correction (−6.6&deg; declination) is applied automatically.</li>
+        <li>GPS only works over HTTPS — use the installed app or the github.io address, not a copied file.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>Data sources</h2>
+      <p class="small" id="about-data">Preloaded: Find a Grave cemetery #1252 photo requests and memorial index; City of St. Louis plat maps (<a href="https://www.stlouismi.com/government/city-clerk/cemetery/" target="_blank" rel="noopener">stlouismi.com</a>); BS&amp;A Online public burial register. City Clerk: Jamie Long, (989) 681-2137 ext. 1050, jlong@stlouismi.com — can provide roster exports and confirm grave numbering within lots.</p>
+      <p class="small">Everything stays on your device. Progress auto-saves; use <em>Export progress</em> for a backup before long trips.</p>
+    </div>
+  </section>
+
+</main>
+
+<!-- GUIDE OVERLAY -->
+<div id="guide">
+  <div class="guide-inner">
+    <div class="guide-top">
+      <div>
+        <div class="guide-name" id="guide-name">—</div>
+        <div class="guide-plot" id="guide-plot">—</div>
+      </div>
+      <button id="guide-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="nav-zone">
+      <canvas id="arrow-canvas" width="360" height="360"></canvas>
+      <div class="nav-dist" id="guide-dist">—</div>
+      <div class="nav-sub" id="guide-sub">turn on GPS to navigate</div>
+    </div>
+    <canvas id="guide-minimap"></canvas>
+    <div class="guide-actions">
+      <a class="btnlike" id="guide-fag" target="_blank" rel="noopener" style="background:var(--ink); color:var(--bg); border-color:var(--ink);">Open Find a Grave &rarr;</a>
+      <button class="secondary" id="guide-savegps">Save GPS here</button>
+      <button class="primary" id="guide-done">&#x2713; Photographed</button>
+      <button class="secondary" id="guide-nostone">No stone found</button>
+      <textarea id="guide-note" class="texty wide" placeholder="Field note (auto-saves)…" style="grid-column:1/-1; min-height:44px; font-family:var(--font-mono); font-size:0.8rem; padding:8px;"></textarea>
+    </div>
+    <div class="neighbors" id="guide-neighbors"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<footer>Data stays on your device &middot; Built for finding the forgotten</footer>
+
+<script src="./oakgrove-data.js"></script>
+<script src="./app-core.js"></script>
+<script src="./app-map.js"></script>
+<script src="./app-ui.js"></script>
+</body>
+</html>

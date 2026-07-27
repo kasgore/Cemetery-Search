@@ -1,0 +1,15 @@
+{
+  "name": "Cemetery Search — Grave Finder",
+  "short_name": "Cemetery",
+  "description": "Find requested graves at Oak Grove Cemetery: georeferenced plat maps, GPS guidance, neighbor anchors, full burial register — all offline.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f2ecdf",
+  "theme_color": "#1a1f1a",
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

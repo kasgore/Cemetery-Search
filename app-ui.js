@@ -1,0 +1,868 @@
+/* ==========================================================
+   Cemetery Search — UI layer (DOM, sensors, storage).
+   ========================================================== */
+(function () {
+'use strict';
+
+const STORE_KEY = 'cemsearch_v3';            // progress + prefs (small, precious)
+const UPDATES_KEY = 'cemsearch_v3_updates';  // bulk dataset updates (large, re-downloadable)
+const $ = id => document.getElementById(id);
+
+/* ---------------- persistent state ---------------- */
+let store = { progress: {}, updates: {}, prefs: {} };
+try {
+  const raw = localStorage.getItem(STORE_KEY);
+  if (raw) {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      store.progress = (parsed.progress && typeof parsed.progress === 'object') ? parsed.progress : {};
+      store.prefs = (parsed.prefs && typeof parsed.prefs === 'object') ? parsed.prefs : {};
+      if (parsed.updates && typeof parsed.updates === 'object') store.updates = parsed.updates; // legacy combined key
+    }
+  }
+} catch (e) { /* ignore */ }
+try {
+  const rawU = localStorage.getItem(UPDATES_KEY);
+  if (rawU) {
+    const u = JSON.parse(rawU);
+    if (u && typeof u === 'object') store.updates = u;
+  }
+} catch (e) { /* ignore */ }
+
+let saveTimer = null;
+function writeProgress() {
+  // progress is written on its own key so bulky updates can never block it
+  localStorage.setItem(STORE_KEY, JSON.stringify({ progress: store.progress, prefs: store.prefs }));
+}
+function save() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(flushSave, 250);
+}
+function flushSave() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  try { writeProgress(); }
+  catch (e) { toast('⚠ Could not save progress (storage full?) — use Export progress now'); }
+}
+function saveUpdates() {
+  try { writeProgress(); } catch (e) { /* progress first, always */ }
+  try { localStorage.setItem(UPDATES_KEY, JSON.stringify(store.updates)); }
+  catch (e) {
+    // storage full: drop the bulkiest re-downloadable piece and retry
+    const u = Object.assign({}, store.updates);
+    delete u.memorials; delete u.memorialsAsOf;
+    try {
+      localStorage.setItem(UPDATES_KEY, JSON.stringify(u));
+      store.updates = u;
+      toast('⚠ Storage full — memorial update not kept (re-run the bookmarklet anytime)');
+    } catch (e2) { toast('⚠ Storage full — dataset update could not be saved'); }
+  }
+}
+window.addEventListener('pagehide', flushSave);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(); });
+
+/* ---------------- model ---------------- */
+const DATA = (typeof window !== 'undefined' && window.OAKGROVE) || {
+  meta: { cemetery: 'No dataset loaded', cem: { lat: 43.4202995, lng: -84.6136017 }, declination: -6.6, asOf: '', counts: {} },
+  sections: {}, maps: [], requests: [], memorials: [], roster: [],
+};
+let model;
+try {
+  model = CS.buildModel(DATA, store.updates);
+} catch (e) {
+  // poisoned updates must never brick the app — fall back to baked data, keep progress
+  console.error('buildModel failed with stored updates:', e);
+  store.updates = {};
+  try { localStorage.removeItem(UPDATES_KEY); } catch (e2) {}
+  model = CS.buildModel(DATA, {});
+  setTimeout(() => toast('⚠ A stored dataset update was corrupt and has been discarded (progress kept)'), 600);
+}
+
+function progressOf(pk) { return store.progress[pk] || {}; }
+function setProgress(pk, patch) {
+  const merged = Object.assign({}, store.progress[pk] || {}, patch, { ts: Date.now() });
+  if (!merged.st && !merged.note && !merged.gps) delete store.progress[pk];
+  else store.progress[pk] = merged;
+  save();
+  updateStats();
+}
+
+/* ---------------- toast ---------------- */
+let toastTimer = null;
+function toast(msg, ms) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.display = 'none'; }, ms || 2600);
+}
+
+/* ---------------- GPS ---------------- */
+const geo = {
+  watchId: null, pos: null, err: null, listeners: new Set(),
+  on() {
+    if (this.watchId != null || !navigator.geolocation) return;
+    this.watchId = navigator.geolocation.watchPosition(
+      p => {
+        this.pos = { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy, heading: p.coords.heading, speed: p.coords.speed, ts: p.timestamp };
+        this.err = null;
+        gpsChip();
+        this.listeners.forEach(f => f(this.pos));
+      },
+      e => {
+        this.err = e;
+        gpsChip();
+        if (location.protocol === 'file:') toast('GPS needs HTTPS — use the github.io address or installed app.');
+        else if (e.code === 1) toast('GPS permission denied. Allow location for this site.');
+      },
+      { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 }
+    );
+    gpsChip();
+  },
+  off() {
+    if (this.watchId != null) { navigator.geolocation.clearWatch(this.watchId); this.watchId = null; }
+    gpsChip();
+  },
+  toggle() { this.watchId == null ? this.on() : this.off(); },
+};
+function gpsChip() {
+  const el = $('gps-chip');
+  if (geo.watchId == null) { el.textContent = 'GPS off'; el.className = ''; }
+  else if (geo.err) { el.textContent = 'GPS error'; el.className = 'err'; }
+  else if (!geo.pos) { el.textContent = 'GPS…'; el.className = ''; }
+  else { el.textContent = 'GPS ±' + Math.round(geo.pos.acc) + 'm'; el.className = 'on'; }
+}
+
+/* ---------------- compass ---------------- */
+const compass = {
+  heading: null, // true-north heading in degrees, smoothed
+  raw: null, active: false, listeners: new Set(),
+  async enable() {
+    if (this.active) return true;
+    try {
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        const res = await DeviceOrientationEvent.requestPermission();
+        if (res !== 'granted') { toast('Compass permission denied'); return false; }
+      }
+    } catch (e) { /* non-iOS or blocked */ }
+    const handler = ev => {
+      let h = null;
+      if (ev.webkitCompassHeading != null && isFinite(ev.webkitCompassHeading)) h = ev.webkitCompassHeading;
+      else if (ev.absolute === true && ev.alpha != null) h = (360 - ev.alpha) % 360;
+      else if (ev.type === 'deviceorientationabsolute' && ev.alpha != null) h = (360 - ev.alpha) % 360;
+      if (h == null) return;
+      // compensate for screen rotation (landscape holds the device sideways)
+      const angle = (screen.orientation && typeof screen.orientation.angle === 'number')
+        ? screen.orientation.angle
+        : (typeof window.orientation === 'number' ? window.orientation : 0);
+      h = (h + angle + 360) % 360;
+      // magnetic -> true north (declination is negative-west, so adding it subtracts west declination)
+      h = (h + (model.meta.declination || 0) + 360) % 360;
+      this.raw = h;
+      if (this.heading == null) this.heading = h;
+      else {
+        let d = ((h - this.heading + 540) % 360) - 180;
+        this.heading = (this.heading + d * 0.25 + 360) % 360;
+      }
+      this.listeners.forEach(f => f(this.heading));
+    };
+    if ('ondeviceorientationabsolute' in window) window.addEventListener('deviceorientationabsolute', handler);
+    else window.addEventListener('deviceorientation', handler);
+    this.active = true;
+    return true;
+  },
+  best() {
+    if (this.heading != null) return { h: this.heading, src: 'compass' };
+    if (geo.pos && geo.pos.heading != null && isFinite(geo.pos.heading) && geo.pos.speed > 0.7) return { h: geo.pos.heading, src: 'gps-course' };
+    return null;
+  },
+};
+
+/* ---------------- wake lock ---------------- */
+let wakeLock = null;
+async function wakeOn() {
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) { /* ok */ }
+}
+function wakeOff() { try { wakeLock && wakeLock.release(); } catch (e) {} wakeLock = null; }
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && $('guide').classList.contains('open')) wakeOn();
+});
+
+/* ---------------- tabs ---------------- */
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + name));
+  if (name === 'walk') renderWalk();
+  if (name === 'map') { ensureMap(); mainMap.resize(); refreshMapTargets(); }
+  if (name === 'data') renderDataInfo();
+}
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+
+/* ---------------- stats ---------------- */
+function updateStats() {
+  const reqs = model.requests;
+  let done = 0;
+  for (const r of reqs) { const st = progressOf(r.mid).st; if (st === 'done' || st === 'nostone' || st === 'notfound') done++; }
+  $('stat-open').textContent = reqs.length - done;
+  $('stat-done').textContent = done;
+}
+
+/* ---------------- walking list ---------------- */
+const SECTION_ORDER = ['Vault Hill', 'Round Hill', 'Old Part', 'Square Hill', 'Hofstetter Hill', 'Cutler Hill',
+  'Oak Hill', 'Mausoleum', 'Single Grave', 'North Hill', 'Veteran Hill', 'Morris Hill'];
+
+function locChip(req) {
+  if (!req.loc) return '<span class="loc-chip"><span class="dot q-none"></span>no location — use neighbors/search</span>';
+  const l = req.loc;
+  const q = l.level === 'gps' || l.level === 'lot' ? 'q-lot' : (l.level === 'adjacent' || l.level === 'block') ? 'q-block' : 'q-section';
+  const lbl = { gps: 'GPS pin', lot: 'lot position', adjacent: 'near lot', block: 'block area', section: 'section only' }[l.level] || l.level;
+  return `<span class="loc-chip"><span class="dot ${q}"></span>${lbl} ±${Math.round(l.acc)} m</span>`;
+}
+function plotLine(req) {
+  const bits = [];
+  if (req.pFag) bits.push(esc(req.plot));
+  else if (req.plot && !/no location/i.test(req.plot)) bits.push(esc(req.plot));
+  if (req.pRos && (!req.pFag || req.plotConflict)) {
+    const r = req.pRos;
+    bits.push('<span class="badge sky" title="from city burial register">register</span> ' +
+      esc([r.section + (r.sub ? ' Sub ' + r.sub : ''), r.block && 'Blk ' + r.block, r.lot && 'Lot ' + r.lot, r.grave && 'Grave ' + r.grave].filter(Boolean).join(' ')));
+  }
+  return bits.join(' &nbsp;·&nbsp; ');
+}
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+const normFilter = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+function renderWalk() {
+  const wrap = $('walk-list');
+  const filter = normFilter($('walk-filter').value);
+  const sort = $('walk-sort').value;
+  const hideDone = $('walk-hidedone').checked;
+
+  let items = model.requests.slice();
+  if (filter) {
+    const terms = filter.split(' ');
+    items = items.filter(r => {
+      const hay = normFilter(r.name + ' ' + r.plot + ' ' + (r.pRos ? r.pRos.section + ' ' + r.pRos.block + ' ' + r.pRos.lot : ''));
+      return terms.every(t => hay.includes(t));
+    });
+  }
+  if (hideDone) items = items.filter(r => !['done', 'nostone', 'notfound'].includes(progressOf(r.mid).st || ''));
+
+  if (!items.length) {
+    wrap.innerHTML = `<div class="empty-state"><div class="ornament">❧</div>${model.requests.length ? 'All caught up — nothing left to walk.' : 'No photo requests loaded. See the Data tab.'}</div>`;
+    updateStats();
+    return;
+  }
+
+  const lotOf = r => { const n = parseInt(r.pBest && r.pBest.lot); return isFinite(n) ? n : 9999; };
+  const blockOf = r => (r.pBest && r.pBest.block) || '';
+  if (sort === 'name') {
+    items.sort((a, b) => CS.normName(a.ln).localeCompare(CS.normName(b.ln)));
+  } else if (sort === 'conf') {
+    const rank = { gps: 0, lot: 1, adjacent: 2, block: 3, section: 4 };
+    items.sort((a, b) => (a.loc ? rank[a.loc.level] : 9) - (b.loc ? rank[b.loc.level] : 9));
+  } else if (sort === 'near' && geo.pos) {
+    items.sort((a, b) => {
+      const da = a.loc ? CS.distM(geo.pos.lat, geo.pos.lng, a.loc.lat, a.loc.lng) : 1e9;
+      const db = b.loc ? CS.distM(geo.pos.lat, geo.pos.lng, b.loc.lat, b.loc.lng) : 1e9;
+      return da - db;
+    });
+  } else {
+    items.sort((a, b) => {
+      const sa = SECTION_ORDER.indexOf((a.pBest || {}).section), sb = SECTION_ORDER.indexOf((b.pBest || {}).section);
+      if (sa !== sb) return (sa === -1 ? 99 : sa) - (sb === -1 ? 99 : sb);
+      const ba = blockOf(a), bb = blockOf(b);
+      if (ba !== bb) return ba.localeCompare(bb, undefined, { numeric: true });
+      return lotOf(a) - lotOf(b);
+    });
+  }
+
+  wrap.innerHTML = '';
+  if (sort === 'route') {
+    const groups = new Map();
+    for (const r of items) {
+      const key = (r.pBest && r.pBest.section) ? (r.pBest.section + (r.pBest.section === 'Old Part' && r.pBest.sub ? ' — Sub ' + r.pBest.sub : '')) : 'Location unknown';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(r);
+    }
+    for (const [name, list] of groups) {
+      const div = document.createElement('div');
+      div.className = 'section-group';
+      const doneCount = list.filter(r => ['done', 'nostone', 'notfound'].includes(progressOf(r.mid).st || '')).length;
+      div.innerHTML = `<div class="section-header"><h2>${esc(name)}</h2><span class="meta">${list.length - doneCount} open · ${list.length} total</span></div>`;
+      for (const r of list) div.appendChild(requestCard(r));
+      wrap.appendChild(div);
+    }
+  } else {
+    for (const r of items) wrap.appendChild(requestCard(r));
+  }
+  updateStats();
+}
+
+function requestCard(req) {
+  const card = document.createElement('div');
+  const st = progressOf(req.mid).st || '';
+  card.className = 'tcard' + (st ? ' st-' + st : '');
+  const yrs = CS.yearsOf(req);
+  const distTxt = (geo.pos && req.loc) ? Math.round(CS.distM(geo.pos.lat, geo.pos.lng, req.loc.lat, req.loc.lng)) + ' m away' : '';
+  const note = progressOf(req.mid).note;
+  card.innerHTML = `
+    <div class="tname">${esc(req.name)}${yrs ? `<span class="years">${yrs}</span>` : ''}
+      ${req.mem && req.mem.veteran ? '<span class="badge stone" title="veteran">vet</span>' : ''}
+      ${req.plotConflict ? '<span class="badge rust" title="Find a Grave and city register disagree — verify">verify plot</span>' : ''}
+    </div>
+    <div class="tmeta">${plotLine(req) || '<span class="lbl">plot</span>—'}</div>
+    <div>${locChip(req)}${distTxt ? ` <span class="mono small">· ${distTxt}</span>` : ''}${note ? ' <span title="has field note">📝</span>' : ''}</div>
+    ${req.notes ? `<div class="reqnote">“${esc(String(req.notes).replace(/<br\s*\/?>/gi, ' '))}” <span class="small">— requester${req.req ? ', ' + esc(req.req) : ''}</span></div>` : ''}
+    <div class="trow-actions">
+      <button class="mini act-guide">➤ Guide</button>
+      <button class="mini act-nb">Neighbors</button>
+      <a class="mini" style="text-decoration:none;" href="https://www.findagrave.com/memorial/${req.mid}" target="_blank" rel="noopener">Find a Grave ↗</a>
+      <button class="mini act-done ${st === 'done' ? 'on' : ''}">✓ Done</button>
+      <button class="mini act-nostone ${st === 'nostone' ? 'on' : ''}">No stone</button>
+      <button class="mini act-notfound ${st === 'notfound' ? 'on' : ''}">Not found</button>
+    </div>
+    <div class="neighbors"></div>`;
+  card.querySelector('.act-guide').addEventListener('click', () => openGuide(req));
+  card.querySelector('.act-nb').addEventListener('click', ev => {
+    const nb = card.querySelector('.neighbors');
+    if (!nb.dataset.loaded) { nb.innerHTML = neighborsHtml(req); nb.dataset.loaded = '1'; }
+    nb.classList.toggle('open');
+  });
+  const setSt = v => () => {
+    const cur = progressOf(req.mid).st;
+    setProgress(req.mid, { st: cur === v ? '' : v });
+    renderWalk();
+  };
+  card.querySelector('.act-done').addEventListener('click', setSt('done'));
+  card.querySelector('.act-nostone').addEventListener('click', setSt('nostone'));
+  card.querySelector('.act-notfound').addEventListener('click', setSt('notfound'));
+  return card;
+}
+
+function neighborsHtml(req) {
+  const p = req.pBest;
+  if (!p || !p.section) return '<div class="small">No plot info — no neighbor list available. Try Search for family names.</div>';
+  const nbs = CS.neighbors(model, p, req.mid);
+  if (!nbs.length) return '<div class="small">No known neighbors in this lot/block.</div>';
+  const withPhoto = nbs.filter(n => n.hasPhoto).length;
+  let html = `<h4>Buried nearby — ${withPhoto} with photographed stones (📷 = visual anchor)</h4>`;
+  for (const n of nbs.slice(0, 14)) {
+    const rel = n.lotDist === 0 ? 'same lot' : n.lotDist + ' lot' + (n.lotDist > 1 ? 's' : '') + ' away';
+    html += `<div class="nb">
+      ${n.hasPhoto ? '<span class="cam">📷</span>' : '<span class="cam" style="opacity:0.25;">·</span>'}
+      ${n.mid ? `<a href="https://www.findagrave.com/memorial/${n.mid}" target="_blank" rel="noopener">${esc(n.name)}</a>` : esc(n.name)}
+      <span class="g">${esc(n.years)} · ${rel}${n.grave ? ' · gr ' + esc(n.grave) : ''}${n.fromRegister ? ' · register' : ''}</span>
+    </div>`;
+  }
+  return html;
+}
+
+/* ---------------- guide overlay ---------------- */
+let guideTarget = null;
+let guideMap = null;
+let arrowRAF = null;
+
+function openGuide(target) {
+  // target: request object or {name, mid, rosKey, loc, pBest, plot}
+  guideTarget = target;
+  // progress key: memorialId when available, else a synthetic register key
+  target.pk = target.mid ? String(target.mid) : (target.rosKey ? 'ros:' + target.rosKey : null);
+  $('guide-name').textContent = target.name;
+  const plotBits = [];
+  if (target.plot && !/no location/i.test(target.plot)) plotBits.push(target.plot);
+  if (target.pRos) plotBits.push('Register: ' + [target.pRos.section + (target.pRos.sub ? ' Sub ' + target.pRos.sub : ''), target.pRos.block && 'Blk ' + target.pRos.block, target.pRos.lot && 'Lot ' + target.pRos.lot, target.pRos.grave && 'Gr ' + target.pRos.grave].filter(Boolean).join(' '));
+  if (target.loc) plotBits.push('±' + Math.round(target.loc.acc) + ' m (' + target.loc.level + ')');
+  $('guide-plot').textContent = plotBits.join('  ·  ') || 'no location information';
+  $('guide-fag').href = target.mid ? 'https://www.findagrave.com/memorial/' + target.mid : '#';
+  $('guide-fag').style.display = target.mid ? '' : 'none';
+  $('guide-note').value = (target.pk && progressOf(target.pk).note) || '';
+  $('guide-neighbors').innerHTML = target.pBest ? neighborsHtml(target) : '';
+  syncGuideButtons();
+
+  $('guide').classList.add('open');
+  document.body.style.overflow = 'hidden';
+
+  geo.on();
+  compass.enable();
+  wakeOn();
+
+  if (!guideMap) {
+    guideMap = new MapView($('guide-minimap'), model, {});
+  }
+  guideMap.model = model;
+  guideMap.targets = target.loc ? [{ lat: target.loc.lat, lng: target.loc.lng, color: '#8b3a1f', r: 7 }] : [];
+  guideMap.highlight = target.loc ? { lat: target.loc.lat, lng: target.loc.lng, acc: target.loc.acc } : null;
+  guideMap.resize();
+  if (target.loc) guideMap.centerOn(target.loc.lat, target.loc.lng, 4.5);
+  else guideMap.fit();
+
+  lastGuideDom = { dist: null, sub: null };
+  lastMiniDraw = { lat: null, lng: null };
+  cancelAnimationFrame(arrowRAF);
+  const loop = () => { drawArrow(); arrowRAF = requestAnimationFrame(loop); };
+  loop();
+}
+function closeGuide() {
+  $('guide').classList.remove('open');
+  document.body.style.overflow = '';
+  cancelAnimationFrame(arrowRAF);
+  wakeOff();
+  renderWalk();
+}
+$('guide-close').addEventListener('click', closeGuide);
+
+function syncGuideButtons() {
+  const st = guideTarget && guideTarget.pk ? (progressOf(guideTarget.pk).st || '') : '';
+  $('guide-done').textContent = st === 'done' ? '✓ Photographed ✔' : '✓ Photographed';
+  $('guide-nostone').textContent = st === 'nostone' ? 'No stone ✔' : 'No stone found';
+}
+$('guide-done').addEventListener('click', () => {
+  if (!guideTarget || !guideTarget.pk) return;
+  const cur = progressOf(guideTarget.pk).st;
+  setProgress(guideTarget.pk, { st: cur === 'done' ? '' : 'done' });
+  syncGuideButtons();
+  toast(progressOf(guideTarget.pk).st === 'done' ? 'Marked photographed ✓' : 'Unmarked');
+});
+$('guide-nostone').addEventListener('click', () => {
+  if (!guideTarget || !guideTarget.pk) return;
+  const cur = progressOf(guideTarget.pk).st;
+  setProgress(guideTarget.pk, { st: cur === 'nostone' ? '' : 'nostone' });
+  syncGuideButtons();
+  toast('Tip: photograph the spot in context and flag the request on Find a Grave.', 3600);
+});
+$('guide-savegps').addEventListener('click', () => {
+  if (!geo.pos) { toast('No GPS fix yet'); return; }
+  if (!guideTarget || !guideTarget.pk) return;
+  setProgress(guideTarget.pk, { gps: { lat: +geo.pos.lat.toFixed(6), lng: +geo.pos.lng.toFixed(6), acc: Math.round(geo.pos.acc) } });
+  toast(`Saved ${geo.pos.lat.toFixed(6)}, ${geo.pos.lng.toFixed(6)} (±${Math.round(geo.pos.acc)} m) — add it to the memorial when fulfilling`, 4200);
+});
+$('guide-note').addEventListener('input', () => {
+  if (guideTarget && guideTarget.pk) setProgress(guideTarget.pk, { note: $('guide-note').value });
+});
+
+let lastGuideDom = { dist: null, sub: null };
+let lastMiniDraw = { lat: null, lng: null };
+function drawArrow() {
+  const cv = $('arrow-canvas');
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height, cx = W / 2, cy = H / 2;
+  ctx.clearRect(0, 0, W, H);
+
+  const t = guideTarget;
+  let distTxt = '—', sub = '';
+  let bearing = null;
+  if (t && t.loc && geo.pos) {
+    const d = CS.distM(geo.pos.lat, geo.pos.lng, t.loc.lat, t.loc.lng);
+    distTxt = d >= 1000 ? (d / 1000).toFixed(2) + '<span class="unit"> km</span>' : Math.round(d) + '<span class="unit"> m</span>';
+    bearing = CS.bearingDeg(geo.pos.lat, geo.pos.lng, t.loc.lat, t.loc.lng);
+    const head = compass.best();
+    if (head) {
+      sub = `bearing ${Math.round(bearing)}° · heading ${Math.round(head.h)}° (${head.src}) · GPS ±${Math.round(geo.pos.acc)} m`;
+    } else {
+      sub = `bearing ${Math.round(bearing)}° ${compassPoint(bearing)} · face north & follow · GPS ±${Math.round(geo.pos.acc)} m`;
+    }
+    if (d <= Math.max(8, t.loc.acc)) sub = `you're within the search circle (±${Math.round(t.loc.acc)} m) — read the stones · ` + sub;
+  } else if (!geo.pos) {
+    sub = geo.watchId == null ? 'tap the GPS chip (top right) to start' : 'waiting for GPS fix…';
+  } else if (t && !t.loc) {
+    sub = 'no predicted location — use the neighbors list';
+  }
+  if (distTxt !== lastGuideDom.dist) { $('guide-dist').innerHTML = distTxt; lastGuideDom.dist = distTxt; }
+  if (sub !== lastGuideDom.sub) { $('guide-sub').textContent = sub; lastGuideDom.sub = sub; }
+
+  // arrow: rotation = bearing - heading (fallback: north-up bearing)
+  const head = compass.best();
+  const rot = bearing == null ? null : ((bearing - (head ? head.h : 0)) * Math.PI / 180);
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  // ring
+  ctx.beginPath();
+  ctx.arc(0, 0, 150, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(110,101,87,0.45)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  // tick for north (rotates opposite heading when compass active)
+  const northRot = head ? (-head.h * Math.PI / 180) : 0;
+  ctx.save();
+  ctx.rotate(northRot);
+  ctx.fillStyle = 'rgba(139,58,31,0.8)';
+  ctx.font = 'bold 26px JetBrains Mono, monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('N', 0, -118);
+  ctx.restore();
+  if (rot != null) {
+    ctx.rotate(rot);
+    ctx.fillStyle = '#2c3a24';
+    ctx.beginPath();
+    ctx.moveTo(0, -104);
+    ctx.lineTo(34, 48);
+    ctx.lineTo(0, 22);
+    ctx.lineTo(-34, 48);
+    ctx.closePath();
+    ctx.fill();
+  } else {
+    ctx.fillStyle = 'rgba(110,101,87,0.4)';
+    ctx.font = '15px JetBrains Mono, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(geo.pos ? '· no target ·' : '· no GPS ·', 0, 5);
+  }
+  ctx.restore();
+
+  // update minimap user dot — only when the position actually changed (not every frame)
+  if (guideMap && geo.pos && (geo.pos.lat !== lastMiniDraw.lat || geo.pos.lng !== lastMiniDraw.lng)) {
+    lastMiniDraw = { lat: geo.pos.lat, lng: geo.pos.lng };
+    guideMap.user = geo.pos;
+    guideMap.draw();
+  }
+}
+function compassPoint(b) {
+  return ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'][Math.round(b / 22.5) % 16];
+}
+
+/* ---------------- main map ---------------- */
+let mainMap = null;
+function ensureMap() {
+  if (mainMap) return;
+  mainMap = new MapView($('map-canvas'), model, {
+    onTap: (x, y) => {
+      const hit = mainMap.hitTest(x, y);
+      if (hit && hit.ref) openGuide(hit.ref);
+    },
+  });
+  $('map-zoom-in').addEventListener('click', () => mainMap.zoomAt(mainMap.w / 2, mainMap.h / 2, 1.35));
+  $('map-zoom-out').addEventListener('click', () => mainMap.zoomAt(mainMap.w / 2, mainMap.h / 2, 0.74));
+  $('map-fit').addEventListener('click', () => mainMap.fit());
+  $('map-locate').addEventListener('click', () => {
+    geo.on();
+    if (geo.pos) { mainMap.centerOn(geo.pos.lat, geo.pos.lng, Math.max(mainMap.scale, 3)); }
+    else toast('Waiting for GPS fix…');
+  });
+  geo.listeners.add(p => { if (mainMap) { mainMap.user = p; if ($('panel-map').classList.contains('active')) mainMap.draw(); } });
+  mainMap.fit();
+}
+window.addEventListener('resize', () => {
+  if (mainMap) mainMap.resize();
+  if (guideMap) guideMap.resize();
+});
+function refreshMapTargets() {
+  if (!mainMap) return;
+  mainMap.model = model;
+  mainMap.targets = model.requests.filter(r => r.loc).map(r => {
+    const st = progressOf(r.mid).st || '';
+    return {
+      lat: r.loc.lat, lng: r.loc.lng,
+      color: st === 'done' ? '#2e7d32' : st ? '#a07a2c' : '#8b3a1f',
+      label: r.ln, ref: r, r: 5.5,
+    };
+  });
+  mainMap.user = geo.pos;
+  mainMap.draw();
+}
+
+/* ---------------- search ---------------- */
+let searchTimer = null;
+$('search-input').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(renderSearch, 160);
+});
+function renderSearch() {
+  const q = $('search-input').value;
+  const wrap = $('search-results');
+  const res = CS.search(model, q, 60);
+  if (!q.trim()) { wrap.innerHTML = ''; return; }
+  if (!res.length) { wrap.innerHTML = '<div class="empty-state">No matches.</div>'; return; }
+  wrap.innerHTML = '';
+  for (const { kind, item } of res) {
+    const div = document.createElement('div');
+    div.className = 'sres';
+    const p = kind === 'mem' ? item.p : { section: item.section, sub: item.sub, block: item.block, lot: item.lot, grave: item.grave };
+    const loc = item.lat != null && item.lng != null ? { lat: item.lat, lng: item.lng, acc: 8, level: 'gps' } : (p && p.section ? CS.locate(model, p) : null);
+    const plotStr = kind === 'mem' ? item.plot :
+      [item.section + (item.sub ? ' Sub ' + item.sub : ''), item.block && 'Blk ' + item.block, item.lot && 'Lot ' + item.lot, item.grave && 'Gr ' + item.grave].filter(Boolean).join(' ');
+    const ros = kind === 'ros' ? item : item.ros;
+    div.innerHTML = `
+      <div class="tname">${esc(item.name)}<span class="years">${CS.yearsOf(item)}</span>
+        ${item.veteran ? '<span class="badge stone">vet</span>' : ''}
+        ${kind === 'mem' && item.hasGravePhoto ? '<span title="stone photographed">📷</span>' : ''}
+        ${kind === 'mem' && item.hasRequest ? '<span class="badge rust">photo requested</span>' : ''}
+      </div>
+      <div class="tmeta">${esc(plotStr || 'no plot recorded')}${kind === 'ros' || (ros && ros.key > 0) ? ' · <span class="lbl">city register</span>' : ''}</div>
+      <div>${loc ? `<span class="loc-chip"><span class="dot ${loc.level === 'lot' || loc.level === 'gps' ? 'q-lot' : loc.level === 'section' ? 'q-section' : 'q-block'}"></span>${loc.level} ±${Math.round(loc.acc)} m</span>` : ''}</div>
+      <div class="trow-actions">
+        ${loc ? '<button class="mini act-guide">➤ Guide</button><button class="mini act-map">Map</button>' : ''}
+        ${kind === 'mem' ? `<a class="mini" style="text-decoration:none;" href="https://www.findagrave.com/memorial/${item.mid}" target="_blank" rel="noopener">Find a Grave ↗</a>` : ''}
+        ${ros && ros.key > 0 ? `<a class="mini" style="text-decoration:none;" href="https://www.bsaonline.com/SiteSearch/PropertyDetails?uid=2024&RecordKey=${ros.key}&RecordKeyType=10&ReferenceKey=${ros.key}&ReferenceType=6&SearchFocus=Cemetery%20Management&SearchCategory=Name&SearchText=x&PageIndex=1" target="_blank" rel="noopener">Register ↗</a>` : ''}
+      </div>`;
+    const target = {
+      name: item.name, mid: kind === 'mem' ? item.mid : (item.mem ? item.mem.mid : null),
+      rosKey: ros && ros.key ? ros.key : null,
+      loc, pBest: p && p.section ? p : null, pRos: kind === 'ros' ? p : null,
+      plot: plotStr,
+    };
+    const g = div.querySelector('.act-guide');
+    if (g) g.addEventListener('click', () => openGuide(target));
+    const mm = div.querySelector('.act-map');
+    if (mm) mm.addEventListener('click', () => {
+      switchTab('map');
+      ensureMap();
+      mainMap.targets = mainMap.targets.filter(t => !t.temp);
+      mainMap.targets.push({ lat: loc.lat, lng: loc.lng, color: '#2b5c7a', label: item.name.split(' ').pop(), ref: target, r: 7, temp: true });
+      mainMap.highlight = { lat: loc.lat, lng: loc.lng, acc: loc.acc };
+      mainMap.centerOn(loc.lat, loc.lng, Math.max(mainMap.scale, 4));
+    });
+    wrap.appendChild(div);
+  }
+}
+
+/* ---------------- data tab ---------------- */
+function renderDataInfo() {
+  const m = model.meta;
+  const upd = store.updates;
+  const gpsAnchors = model.memorials.filter(x => x.lat != null).length;
+  $('dataset-info').innerHTML = [
+    `<strong>${esc(m.cemetery)}</strong>`,
+    `Baked data as of <strong>${esc(m.asOf || '?')}</strong>` + (upd.requestsAsOf ? ` · requests refreshed <strong>${esc(upd.requestsAsOf)}</strong>` : '') + (upd.memorialsAsOf ? ` · memorials refreshed <strong>${esc(upd.memorialsAsOf)}</strong>` : ''),
+    `${model.requests.length} photo requests · ${model.memorials.length} memorials (${gpsAnchors} GPS) · ${model.roster.length} register records`,
+    `${Object.keys(store.progress).length} graves with saved progress/notes`,
+  ].join('<br>');
+  // bookmarklets
+  const bk = CS.bookmarklets(m.fagCemeteryId || 1252);
+  const a1 = $('bkm-requests'), a2 = $('bkm-memorials');
+  a1.setAttribute('href', bk.requests);
+  a2.setAttribute('href', bk.memorials);
+}
+// clicking a bookmarklet link inside the app copies the code instead of running it
+for (const [id, key] of [['bkm-requests', 'requests'], ['bkm-memorials', 'memorials']]) {
+  $(id).addEventListener('click', ev => {
+    ev.preventDefault();
+    const bk = CS.bookmarklets(model.meta.fagCemeteryId || 1252);
+    navigator.clipboard && navigator.clipboard.writeText(bk[key]).then(
+      () => toast('Bookmarklet code copied — create a new bookmark and paste it as the URL'),
+      () => toast('Copy failed — long-press the link and copy it instead')
+    );
+  });
+}
+
+function rebuild() {
+  model = CS.buildModel(DATA, store.updates);
+  if (mainMap) { mainMap.model = model; refreshMapTargets(); }
+  if (guideMap) guideMap.model = model;
+  renderWalk();
+  renderDataInfo();
+  updateStats();
+}
+
+/* file/drop helpers */
+function wireDrop(dropId, fileId, handler) {
+  const dz = $(dropId), fi = $(fileId);
+  dz.addEventListener('click', () => fi.click());
+  fi.addEventListener('change', () => { if (fi.files[0]) handler(fi.files[0]); fi.value = ''; });
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault();
+    dz.classList.remove('dragover');
+    if (e.dataTransfer.files[0]) handler(e.dataTransfer.files[0]);
+  });
+}
+let xlsxLoading = null;
+function ensureXlsx() {
+  if (typeof XLSX !== 'undefined') return Promise.resolve();
+  if (xlsxLoading) return xlsxLoading;
+  xlsxLoading = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = './xlsx.full.min.js';
+    s.onload = resolve;
+    s.onerror = () => {
+      const s2 = document.createElement('script');
+      s2.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      s2.onload = resolve;
+      s2.onerror = () => reject(new Error('Could not load spreadsheet library'));
+      document.head.appendChild(s2);
+    };
+    document.head.appendChild(s);
+  });
+  return xlsxLoading;
+}
+function readSheetFile(file) {
+  return ensureXlsx().then(() => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read file'));
+    reader.onload = e => {
+      try {
+        const ext = file.name.toLowerCase().split('.').pop();
+        const wb = ext === 'csv'
+          ? XLSX.read(e.target.result, { type: 'string', raw: false })
+          : XLSX.read(e.target.result, { type: 'array' });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        resolve(XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false }));
+      } catch (err) { reject(err); }
+    };
+    if (file.name.toLowerCase().endsWith('.csv')) reader.readAsText(file);
+    else reader.readAsArrayBuffer(file);
+  }));
+}
+
+/* validate a candidate updates object by building a throwaway model BEFORE committing */
+function commitUpdates(patch, statusEl, okMsg) {
+  const candidate = Object.assign({}, store.updates, patch);
+  try { CS.buildModel(DATA, candidate); }
+  catch (e) {
+    statusEl.textContent = '⚠ Update rejected — it would break the app (' + e.message + ')';
+    return false;
+  }
+  store.updates = candidate;
+  saveUpdates();
+  rebuild();
+  statusEl.textContent = okMsg;
+  return true;
+}
+
+/* requests update */
+function applyRequests(result, sourceName) {
+  if (result.error) { $('fag-status').textContent = '⚠ ' + result.error; return; }
+  if (!result.requests.length) { $('fag-status').textContent = '⚠ No requests found in ' + sourceName; return; }
+  const cur = model.requests.length;
+  if (cur && result.requests.length < cur * 0.5 &&
+      !confirm(`This replaces the current ${cur} photo requests with only ${result.requests.length}. A partial file loses requests from view (progress is kept). Continue?`)) {
+    $('fag-status').textContent = 'Cancelled.';
+    return;
+  }
+  if (commitUpdates({ requests: result.requests, requestsAsOf: new Date().toISOString().substring(0, 10) },
+    $('fag-status'), '✓ ' + result.requests.length + ' requests loaded from ' + sourceName)) {
+    toast(result.requests.length + ' photo requests updated');
+  }
+}
+$('btn-fag-apply').addEventListener('click', () => {
+  const text = $('fag-input').value.trim();
+  if (!text) { $('fag-status').textContent = 'Paste JSON/CSV first, or drop a file.'; return; }
+  if (text[0] === '[' || text[0] === '{') applyRequests(CS.parseRequestsJson(text), 'pasted JSON');
+  else {
+    // CSV text paste
+    ensureXlsx().then(() => {
+      const wb = XLSX.read(text, { type: 'string', raw: false });
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: false });
+      applyRequests(CS.parseRequestsSheet(rows), 'pasted CSV');
+    }).catch(e => { $('fag-status').textContent = '⚠ ' + e.message; });
+  }
+});
+wireDrop('fag-drop', 'fag-file', file => {
+  if (file.name.toLowerCase().endsWith('.json')) {
+    file.text().then(t => applyRequests(CS.parseRequestsJson(t), file.name));
+  } else {
+    readSheetFile(file).then(rows => applyRequests(CS.parseRequestsSheet(rows), file.name))
+      .catch(e => { $('fag-status').textContent = '⚠ ' + e.message; });
+  }
+});
+
+/* memorials update */
+$('btn-mem-apply').addEventListener('click', () => {
+  const text = $('mem-input').value.trim();
+  if (!text) { $('mem-status').textContent = 'Paste the bookmarklet JSON first.'; return; }
+  const result = CS.parseMemorialsJson(text, model.meta.cem);
+  if (result.error) { $('mem-status').textContent = '⚠ ' + result.error; return; }
+  if (!result.memorials.length) { $('mem-status').textContent = '⚠ No memorials in that JSON.'; return; }
+  if (commitUpdates({ memorials: result.memorials, memorialsAsOf: new Date().toISOString().substring(0, 10) },
+    $('mem-status'), '✓ ' + result.memorials.length + ' memorials loaded')) {
+    toast(result.memorials.length + ' memorials updated');
+  }
+});
+
+/* roster update */
+function applyRoster(result, sourceName) {
+  if (result.error) { $('bsa-status').textContent = '⚠ ' + result.error; return; }
+  if (!result.roster.length) { $('bsa-status').textContent = '⚠ No rows recognized in ' + sourceName; return; }
+  const cur = model.roster.length;
+  if (cur && result.roster.length < cur * 0.5 &&
+      !confirm(`This replaces the current ${cur}-record burial register with only ${result.roster.length} rows. Continue?`)) {
+    $('bsa-status').textContent = 'Cancelled.';
+    return;
+  }
+  commitUpdates({ roster: result.roster },
+    $('bsa-status'), '✓ ' + result.roster.length + ' register rows loaded from ' + sourceName + ' (replaces baked register)');
+}
+$('btn-bsa-apply').addEventListener('click', () => {
+  const text = $('bsa-input').value.trim();
+  if (!text) { $('bsa-status').textContent = 'Paste roster rows first, or drop a file.'; return; }
+  applyRoster(CS.parseRosterText(text), 'pasted text');
+});
+wireDrop('bsa-drop', 'bsa-file', file => {
+  readSheetFile(file).then(rows => applyRoster(CS.parseRosterSheet(rows), file.name))
+    .catch(e => { $('bsa-status').textContent = '⚠ ' + e.message; });
+});
+
+/* export / import / reset */
+$('btn-export').addEventListener('click', () => {
+  const payload = { app: 'cemetery-search', v: 3, exported: new Date().toISOString(), progress: store.progress, updates: store.updates, prefs: store.prefs };
+  const blob = new Blob([JSON.stringify(payload, null, 1)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'cemetery-search-backup-' + new Date().toISOString().substring(0, 10) + '.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+$('btn-import').addEventListener('click', () => $('import-file').click());
+$('import-file').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  f.text().then(t => {
+    const data = JSON.parse(t);
+    if (data.app !== 'cemetery-search' && !data.progress) throw new Error('Not a Cemetery Search backup');
+    const inProg = (data.progress && typeof data.progress === 'object' && !Array.isArray(data.progress)) ? data.progress : {};
+    const inUpd = (data.updates && typeof data.updates === 'object' && !Array.isArray(data.updates)) ? data.updates : {};
+    const curN = Object.keys(store.progress).length, inN = Object.keys(inProg).length;
+    if (curN && !confirm(`Import backup${data.exported ? ' from ' + String(data.exported).substring(0, 10) : ''}: ${inN} progress entries. Newer entries win; nothing currently saved is deleted. Continue?`)) return;
+    // merge per-grave, newest timestamp wins — an old backup can't clobber fresh field work
+    for (const [k, v] of Object.entries(inProg)) {
+      if (!store.progress[k] || (v && v.ts || 0) >= (store.progress[k].ts || 0)) store.progress[k] = v;
+    }
+    try { CS.buildModel(DATA, inUpd); store.updates = inUpd; } catch (err) { toast('⚠ Backup dataset updates were invalid — progress imported, updates skipped'); }
+    flushSave();
+    saveUpdates();
+    rebuild();
+    toast('Backup imported ✓');
+  }).catch(err => toast('Import failed: ' + err.message));
+  e.target.value = '';
+});
+$('btn-reset').addEventListener('click', () => {
+  if (!confirm('Clear all check-offs, notes and saved GPS? (Dataset updates are kept.)')) return;
+  store.progress = {};
+  flushSave();
+  rebuild();
+});
+$('btn-revert').addEventListener('click', () => {
+  if (!confirm('Discard all dataset updates (requests/memorials/register refreshes) and return to the app\'s baked-in data? Progress is kept.')) return;
+  store.updates = {};
+  saveUpdates();
+  rebuild();
+  toast('Reverted to baked dataset');
+});
+
+/* ---------------- walk controls ---------------- */
+let walkTimer = null;
+$('walk-filter').addEventListener('input', () => { clearTimeout(walkTimer); walkTimer = setTimeout(renderWalk, 150); });
+$('walk-sort').addEventListener('change', () => {
+  if ($('walk-sort').value === 'near') geo.on();
+  renderWalk();
+});
+$('walk-hidedone').addEventListener('change', renderWalk);
+$('gps-chip').addEventListener('click', () => geo.toggle());
+geo.listeners.add(() => {
+  if ($('walk-sort').value === 'near' && $('panel-walk').classList.contains('active')) renderWalk();
+});
+
+/* ---------------- service worker ---------------- */
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(() => { /* offline install unavailable */ });
+  });
+}
+
+/* ---------------- boot ---------------- */
+$('subtitle').textContent = (model.meta.cemetery || '').replace(', Michigan', ', MI');
+renderWalk();
+renderDataInfo();
+updateStats();
+})();
