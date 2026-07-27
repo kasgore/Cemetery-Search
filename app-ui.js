@@ -544,14 +544,20 @@ function requestCard(req, model) {
   const yrs = CS.yearsOf(req);
   const distTxt = (geo.pos && req.loc) ? fmtDist(CS.distM(geo.pos.lat, geo.pos.lng, req.loc.lat, req.loc.lng)) + ' away' : '';
   const prog = progressOf(req.mid);
+  const reqYear = (String(req.created).match(/\b(20\d\d)\b/) || [])[1];
+  const ageDays = reqYear ? (Date.now() - new Date(req.created).getTime()) / 86400000 : 0;
+  const eraHint = (!req.loc && req.dy) ? CS.suggestSection(model, req.dy) : null;
   card.innerHTML = `
     <div class="tname">${esc(req.name)}${yrs ? `<span class="years">${yrs}</span>` : ''}
       ${req.mem && req.mem.veteran ? '<span class="badge stone" title="veteran">vet</span>' : ''}
       ${req.plotConflict ? '<span class="badge rust" title="Find a Grave and city register disagree — verify">verify plot</span>' : ''}
       ${req.rosVerify ? '<span class="badge outline" title="register row matched by name/date similarity — double-check it is the same person">register match — verify</span>' : ''}
+      ${ageDays > 550 ? `<span class="badge gold" title="long-open request — others have likely tried; lean on family leads and the register">⏳ since ${reqYear}</span>` : ''}
+      ${req.claimed ? '<span class="badge outline" title="another volunteer has claimed this request on Find a Grave — coordinate before shooting">claimed</span>' : ''}
     </div>
     <div class="tmeta">${plotLine(req) || '<span class="lbl">plot</span>—'}</div>
-    <div>${locChip(req, model)}${distTxt ? ` <span class="mono small">· ${distTxt}</span>` : ''}${prog.note ? ' <span title="has field note">📝</span>' : ''}</div>
+    <div>${locChip(req, model)}${eraHint ? ` <span class="mono small">· ${req.dy}-era burials cluster in ${esc(eraHint.section)}</span>` : ''}${distTxt ? ` <span class="mono small">· ${distTxt}</span>` : ''}${prog.note ? ' <span title="has field note">📝</span>' : ''}</div>
+    ${req.problem ? `<div class="reqnote" style="border-left-color:var(--rust);">⚠ previously reported: “${esc(req.problem)}”</div>` : ''}
     ${prog.gps ? `<div class="tmeta">📍 saved ${prog.gps.lat}, ${prog.gps.lng} (±${prog.gps.acc} m)</div>` : ''}
     ${req.notes ? `<div class="reqnote">“${esc(String(req.notes).replace(/<br\s*\/?>/gi, ' '))}” <span class="small">— requester${req.req ? ', ' + esc(req.req) : ''}</span></div>` : ''}
     <div class="trow-actions">
@@ -609,19 +615,48 @@ function wireLeadButtons(container, model) {
 
 function familyHtml(req, model) {
   const fam = CS.familyHints(model, req, 8);
-  if (!fam.length) return '<div class="small">No plot info and no promising same-surname burials here. Try Search across all cemeteries.</div>';
-  let html = '<h4>No plot on record — family leads (spouses usually share the lot):</h4>';
-  for (const f of fam) {
-    const lead = f.loc
-      ? `<button class="mini act-lead" data-name="${esc(f.name)}" data-mid="${f.mid}" data-lat="${f.loc.lat}" data-lng="${f.loc.lng}" data-acc="${Math.round(f.loc.acc)}" data-level="${f.loc.level}" data-plot="${esc(f.plot)}">➤ Guide</button>`
-      : '';
-    html += `<div class="nb">
-      ${f.hasPhoto ? '<span class="cam">📷</span>' : '<span class="cam" style="opacity:0.25;">·</span>'}
-      <a href="https://www.findagrave.com/memorial/${f.mid}" target="_blank" rel="noopener">${esc(f.name)}</a>
-      <span class="g">${esc(f.years)}${f.plot ? ' · ' + esc(f.plot) : ''}${f.loc ? ' · ' + levelLabel(f.loc.level) + ' ±' + Math.round(f.loc.acc) + ' m' : ''}</span>
-      ${lead}
-    </div>`;
+  let html = '';
+  if (!fam.length) {
+    html = '<div class="small">No plot info and no promising same-surname burials here.</div>';
+  } else {
+    const hasTrue = fam.some(f => f.isFamily);
+    html = hasTrue
+      ? '<h4>Family on record (from Find a Grave\'s own links — strongest lead):</h4>'
+      : '<h4>No plot on record — family leads (spouses usually share the lot):</h4>';
+    for (const f of fam) {
+      const lead = f.loc
+        ? `<button class="mini act-lead" data-name="${esc(f.name)}" data-mid="${f.mid}" data-lat="${f.loc.lat}" data-lng="${f.loc.lng}" data-acc="${Math.round(f.loc.acc)}" data-level="${f.loc.level}" data-plot="${esc(f.plot)}">➤ Guide</button>`
+        : '';
+      html += `<div class="nb">
+        ${f.isFamily ? '<span title="linked as spouse/child on Find a Grave">👪</span>' : ''}
+        ${f.hasPhoto ? '<span class="cam">📷</span>' : '<span class="cam" style="opacity:0.25;">·</span>'}
+        <a href="https://www.findagrave.com/memorial/${f.mid}" target="_blank" rel="noopener">${esc(f.name)}</a>
+        <span class="g">${esc(f.years)}${f.plot ? ' · ' + esc(f.plot) : ''}${f.loc ? ' · ' + levelLabel(f.loc.level) + ' ±' + Math.round(f.loc.acc) + ' m' : ''}</span>
+        ${lead}
+      </div>`;
+    }
   }
+  // wrong-cemetery check: the same person may be recorded at another local cemetery
+  if (!req.loc && (req.dy || req.by)) {
+    const xc = CS.crossCemeteryMatches(builtModels(), req, model);
+    if (xc.length) {
+      html += '<h4 style="margin-top:8px;">⚠ Same name & dates found at another cemetery — the request may be misplaced:</h4>';
+      for (const x of xc) {
+        html += `<div class="nb">
+          <span>${esc(x.model.cem.name)}:</span>
+          ${x.kind === 'mem'
+            ? `<a href="https://www.findagrave.com/memorial/${x.item.mid}" target="_blank" rel="noopener">${esc(x.item.name)}</a>`
+            : esc(x.item.name) + ' <span class="g">(register)</span>'}
+          <span class="g">${esc(CS.yearsOf(x.item))}</span>
+        </div>`;
+      }
+    }
+  }
+  // still stuck? research links that resolve most "tried and failed" cases
+  const links = CS.researchLinks(req).map(l => `<a class="mini" style="text-decoration:none;" href="${l.url}" target="_blank" rel="noopener">${esc(l.label)} ↗</a>`);
+  html += `<div class="trow-actions" style="margin-top:8px;">${links.join(' ')}</div>`;
+  const contact = model && model.cem && model.cem.contact;
+  if (contact) html += `<div class="small" style="margin-top:6px;">📞 Burial records: ${esc(contact)}</div>`;
   return html;
 }
 function neighborsHtml(req, model) {
@@ -1039,7 +1074,7 @@ function renderDataInfo() {
   const totAnch = builtModels().reduce((s, m) => s + m.memorials.filter(x => x.lat != null).length, 0);
   lines.push(`${totReq} open photo requests · ${totMem.toLocaleString()} memorials (${totAnch.toLocaleString()} GPS anchors in built models) · ${Object.keys(store.progress).length} graves with saved progress`);
   for (const c of DS.cemeteries.slice(0, 50)) {
-    lines.push(`&nbsp;&nbsp;· ${esc(c.name)} — ${c.data.requests.length} req, ${c.data.memorials.length.toLocaleString()} memorials${c.data.roster && c.data.roster.length ? ', register ✓' : ''}${c.miles != null ? ', ' + c.miles + ' mi' : ''}`);
+    lines.push(`&nbsp;&nbsp;· ${esc(c.name)} — ${c.data.requests.length} req, ${c.data.memorials.length.toLocaleString()} memorials${c.data.roster && c.data.roster.length ? ', register ✓' : ''}${c.miles != null ? ', ' + c.miles + ' mi' : ''}${c.contact ? '<br>&nbsp;&nbsp;&nbsp;&nbsp;📞 ' + esc(c.contact) : ''}`);
   }
   $('dataset-info').innerHTML = lines.join('<br>');
 

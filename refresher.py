@@ -63,6 +63,33 @@ DEFAULT_CONFIG = {
     ],
     # static plat-map geometry per cemetery (produced by tools/ pipeline)
     "geometry": {"1252": "geometry/oakgrove.json"},
+    # who holds the burial book — the call to make when a grave can't be found.
+    # Sources: Gratiot Co. Cemetery Listing 2025-03-24 (gratiotmi.com), city/township sites.
+    "contacts": {
+        "1252": "City of St. Louis — clerk Jamie Long (989)681-2137 x1050; cemetery line (989)261-1435",
+        "1506": "City of Alma clerk (989)463-8336; sexton Jim Goodhall (989)463-8339",
+        "1775380": "City of Ithaca — sexton Jeffery Glynn, City Hall (989)875-3200",
+        "1711": "Coe Twp — clerk Riley Travis (989)763-8829; twp hall (989)828-5960 (mgmt unconfirmed)",
+        "2249320": "Village of Breckenridge office (989)842-3109 (lots, burials, genealogy)",
+        "620247": "New Haven Twp — sexton Candy Smith (989)584-3707",
+        "1475": "Richland Twp clerk Laurie Darmody (989)268-5286, richlandclerkvburg@gmail.com",
+        "1037999": "North Star Twp — Heidi Drowley (989)875-3352",
+        "445": "Sumner Twp — Carlene McGill (989)463-4531",
+        "1828": "Sumner Twp — Carlene McGill (989)463-4531",
+        "1434": "Sumner Twp — Carlene McGill (989)463-4531",
+        "666": "Hamilton Twp — sexton Jeremy McAllister (989)666-0206",
+        "89": "Emerson Twp (Beebe = Emerson Twp Cemetery) — sexton Jeremy McAllister (989)666-0206",
+        "1381": "Emerson Twp — sexton Jeremy McAllister (989)666-0206",
+        "252": "Private — Chapel Gardens, 6798 W Monroe Rd, Alma (989)341-6850",
+        "2257472": "Seville Twp — Jim Mulder (989)859-0617",
+        "154": "Seville Twp — Jim Mulder (989)859-0617",
+        "153": "North Star Twp — Heidi Drowley (989)875-3352",
+        "2015": "Pine River Twp — Joseph Dickman (989)463-6468",
+        "159825": "Chippewa Twp — clerk/sexton Fran Ash (989)772-2685; twp (989)773-3600",
+        "940": "Lincoln Twp — clerk Danielle Willoughby (989)560-0064; twp hall (989)828-6967",
+        "863": "Lafayette Twp — Corey Schaub (989)620-4354",
+        "879": "Lakefield Twp — sexton (989)620-6839; clerk Mike Slodowski (989)643-7731",
+    },
     "max_memorials_per_cemetery": 30000,
     "page_pause_ms": [350, 600],
 }
@@ -257,6 +284,9 @@ def pull_requests(cfg, cem_id, cem=None):
             "created": r.get("dateCreated") or "",
             "lat": float(r["latitude"]) if has_gps and r.get("latitude") else None,
             "lng": float(r["longitude"]) if has_gps and r.get("longitude") else None,
+            # hard-case triage signals
+            "claimed": r.get("dateClaimed") or "",
+            "problem": re.sub(r"\s+", " ", str(r.get("problemDetails") or r.get("problems") or "")).strip()[:140],
         })
     return [r for r in out if r["mid"]]
 
@@ -295,6 +325,14 @@ def pull_memorials(cfg, cem, previous_count=0):
                 flags |= 4
             if r.get("personHasPhoto"):
                 flags |= 8
+            # family links (spouse + children names) — the strongest lead for
+            # hard-to-find graves: relatives share lots even across surnames
+            fam = []
+            for nm in (r.get("Spouses") or []) + (r.get("Children") or []):
+                if isinstance(nm, str) and nm.strip():
+                    fam.append(re.sub(r"\s+", " ", nm).strip()[:40])
+                if len(fam) >= 8:
+                    break
             rows.append([
                 mid,
                 r.get("fullName") or "",
@@ -303,6 +341,7 @@ def pull_memorials(cfg, cem, previous_count=0):
                 r.get("deathYear") or 0,
                 re.sub(r"\s+", " ", (r.get("plot") or "")).strip(),
                 lat, lng, flags,
+                "|".join(fam),
             ])
         skip += 100
         if not got:
@@ -432,6 +471,9 @@ def register_rows(done, section_map=None):
             note_bits.append("head: " + r["Buriel at head"])
         if r.get("Buriel at Foot"):
             note_bits.append("foot: " + r["Buriel at Foot"])
+        if r.get("Funeral Home"):
+            # funeral homes keep their own burial records — a real lead for lost graves
+            note_bits.append("funeral home: " + r["Funeral Home"])
         note = re.sub(r"\s+", " ", " | ".join(b for b in note_bits if b)).strip()[:160]
         block = (r.get("Block") or "").strip().upper()
         block = re.sub(r"^(?:BLOCK|BLCK|BLK)\s*", "", block)  # Alma writes "BLCKT" for block T
@@ -538,6 +580,7 @@ def build_output(cfg, registry):
             "id": cem["id"], "name": cem["name"], "county": cem["county"],
             "lat": cem["lat"], "lng": cem["lng"], "miles": cem["miles"],
             "declination": cfg["declination"],
+            "contact": cfg.get("contacts", {}).get(cid, ""),
             "meta": {
                 "asOf": registry.get("requestsAsOf", ""),
                 "memorialsAsOf": registry.get("memorialsAsOf", {}).get(cid, ""),

@@ -319,5 +319,46 @@ t('sectionless register keys to *', almaStyle.roster[0].section === '*', almaSty
 t('register-located via bare-letter anchors', almaStyle.requests[0].loc && almaStyle.requests[0].loc.level === 'lot',
   almaStyle.requests[0].loc && almaStyle.requests[0].loc.level);
 
+/* ---------- hard-case features ---------- */
+section('hard-case features');
+// true-family hints via FAG spouse/children links (10th memorial column),
+// including a married daughter under a different surname
+const famCem = {
+  meta: { cemetery: 'Famville', fagCemeteryId: 777, cem: { lat: 43.45, lng: -84.7 }, declination: -6.6, asOf: '' },
+  sections: {}, maps: [],
+  requests: [{ prId: 1, mid: 5001, fn: 'Ezra', ln: 'Whitcomb', by: 1850, dy: 1920, plot: '',
+    created: '10 Jan 2022', problem: 'searched twice, no stone', claimed: '' }],
+  memorials: [
+    [5001, 'Ezra Whitcomb', '', 1850, 1920, '', null, null, 2, 'Jane Whitcomb|Cora Whitcomb Ellis'],
+    [5002, 'Jane Whitcomb', '', 1855, 1930, 'Row 3 Lot 8', 43.450100, -84.700100, 1, 'Ezra Whitcomb'],
+    [5003, 'Cora Whitcomb Ellis', 'Whitcomb', 1880, 1950, 'Row 5 Lot 2', 43.450200, -84.700200, 1, ''],
+    [5004, 'Zeb Unrelated', '', 1850, 1921, 'Row 9 Lot 9', 43.450300, -84.700300, 1, ''],
+  ],
+  roster: [],
+};
+const famModel = CS.buildModel(famCem, {});
+const hints = CS.familyHints(famModel, famModel.requests[0], 8);
+t('family links found', hints.length >= 2, String(hints.length));
+t('true family ranked first', hints[0].isFamily === true && /Whitcomb/.test(hints[0].name), hints[0] && hints[0].name);
+t('married daughter (different-surname path) included', hints.some(h => h.isFamily && /Ellis/.test(h.name)),
+  JSON.stringify(hints.map(h => h.name)));
+t('request hard-case fields', famModel.requests[0].problem.includes('no stone') && famModel.requests[0].created === '10 Jan 2022');
+// cross-cemetery match: same person filed at another cemetery
+const otherCem = CS.buildModel({
+  meta: { cemetery: 'Elsewhere', fagCemeteryId: 778, cem: { lat: 43.5, lng: -84.75 }, declination: -6.6, asOf: '' },
+  sections: {}, maps: [], requests: [],
+  memorials: [[6001, 'Ezra Whitcomb', '', 1850, 1920, 'Blk A Lot 1', 43.500100, -84.750100, 1, '']],
+  roster: [],
+}, {});
+const xc = CS.crossCemeteryMatches([famModel, otherCem], famModel.requests[0], famModel);
+t('cross-cemetery match found', xc.length === 1 && xc[0].model === otherCem, String(xc.length));
+// era -> section suggestion on real Oak Grove data
+const sugg = CS.suggestSection(model, 1900);
+t('era suggestion returns a plausible section', !sugg || (sugg.section && sugg.share >= 45), JSON.stringify(sugg));
+// research links
+const rl = CS.researchLinks({ fn: 'Ezra', ln: 'Whitcomb', dy: 1920 });
+t('research links built', rl.length >= 3 && rl.some(l => l.url.includes('familysearch')) && rl.some(l => l.url.includes('chroniclingamerica')));
+t('no obit link for modern deaths', !CS.researchLinks({ fn: 'A', ln: 'B', dy: 2020 }).some(l => l.url.includes('chroniclingamerica')));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

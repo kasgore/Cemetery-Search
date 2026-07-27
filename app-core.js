@@ -234,6 +234,7 @@ CS.normalizeDataset = function (raw) {
       cemeteries: raw.cemeteries.map(c => ({
         id: c.id, name: c.name || ('Cemetery ' + c.id), county: c.county || '',
         miles: c.miles != null ? c.miles : null, bsaUid: c.bsaUid || null,
+        contact: c.contact || '',
         data: {
           meta: {
             cemetery: c.name, fagCemeteryId: c.id,
@@ -286,7 +287,7 @@ CS.buildModel = function (data, updates) {
   for (const m of (data.memorials || [])) memRows.set(m[0], m);
   for (const m of (updates.memorials || [])) memRows.set(m[0], m);
   for (const row of memRows.values()) {
-    const [midRaw, name, maiden, by, dy, plot, lat, lng, flags] = row;
+    const [midRaw, name, maiden, by, dy, plot, lat, lng, flags, famRaw] = row;
     const mid = +midRaw || null;
     if (!mid) continue;
     const p = CS.parsePlot(plot, profile);
@@ -302,6 +303,7 @@ CS.buildModel = function (data, updates) {
       cf: CS.canonFirst(sn.first), fr: CS.normName(sn.first).split(' ')[0] || '',
       sk: CS.normName(name) + (maiden ? ' ' + CS.normName(maiden) : ''),
       dyb: false,
+      fam: famRaw ? String(famRaw).split('|').filter(Boolean) : [],
     };
     model.memorials.push(mem);
     model.memById.set(mid, mem);
@@ -352,6 +354,7 @@ CS.buildModel = function (data, updates) {
       fn, ln, by: r.by || null, dy: r.dy || null,
       bd: r.bd || '', dd: r.dd || '', plot: r.plot || '', notes: r.notes || '',
       req: r.req || '', created: r.created || '',
+      claimed: r.claimed || '', problem: r.problem || '',
       lat: r.lat != null ? r.lat : null, lng: r.lng != null ? r.lng : null,
       p: CS.parsePlot(r.plot, profile),
       nl: CS.normName(ln), sx: CS.soundex(ln), nm: '',
@@ -762,12 +765,51 @@ CS.yearsOf = yearsOf;
 /* ---------------- family hints ---------------- */
 // For requests with no plot info: same-surname burials whose graves ARE locatable.
 // Families bought adjacent lots; spouses are usually in the same lot even unmarked.
+/* name indexes for true-family lookups, built once per model on demand */
+function famIndexes(model) {
+  if (model._nameIdx) return model;
+  const nameIdx = new Map();  // normalized full name -> [memorials]
+  const famIdx = new Map();   // normalized family-member name -> [memorials listing them]
+  const add = (map, k, m) => { if (!k) return; if (!map.has(k)) map.set(k, []); map.get(k).push(m); };
+  for (const m of model.memorials) {
+    add(nameIdx, CS.normName(m.name), m);
+    for (const f of m.fam) add(famIdx, CS.normName(f), m);
+  }
+  model._nameIdx = nameIdx;
+  model._famIdx = famIdx;
+  return model;
+}
+
 CS.familyHints = function (model, req, limit) {
   const lastN = CS.normName(req.ln), lastS = CS.soundex(req.ln);
   if (!lastN) return [];
   const out = [];
+
+  /* TRUE family first: Find a Grave's own spouse/children links — these carry
+     across surnames (married daughters) and are the strongest field lead */
+  famIndexes(model);
+  const reqName = CS.normName(req.name || (req.fn + ' ' + req.ln));
+  const famNames = new Set();
+  const mem = req.mid != null ? model.memById.get(req.mid) : null;
+  if (mem) for (const f of mem.fam) famNames.add(CS.normName(f));
+  const trueFam = new Map(); // mid -> memorial
+  for (const fn of famNames) {
+    for (const m of (model._nameIdx.get(fn) || [])) if (m.mid !== req.mid) trueFam.set(m.mid, m);
+  }
+  for (const m of (model._famIdx.get(reqName) || [])) if (m.mid !== req.mid) trueFam.set(m.mid, m);
+  for (const m of trueFam.values()) {
+    let loc = null;
+    if (m.lat != null) loc = { lat: m.lat, lng: m.lng, acc: 6, level: 'gps' };
+    else if (m.p) loc = CS.locate(model, m.p);
+    out.push({
+      name: m.name, years: yearsOf(m), mid: m.mid, hasPhoto: m.hasGravePhoto,
+      plot: m.plot || '', loc, yearGap: 0, exactLast: true, isFamily: true,
+    });
+    if (out.length >= (limit || 8)) return out;
+  }
+  const famMids = new Set(out.map(f => f.mid));
   for (const m of model.memorials) {
-    if (m.mid === req.mid) continue;
+    if (m.mid === req.mid || famMids.has(m.mid)) continue;
     const exactLast = m.nl === lastN || (m.nm && m.nm === lastN);
     if (!exactLast && m.sx !== lastS) continue;
     const yearGap = (req.dy && m.dy) ? Math.abs(req.dy - m.dy) : (req.by && m.by) ? Math.abs(req.by - m.by) : 60;
@@ -786,10 +828,94 @@ CS.familyHints = function (model, req, limit) {
     });
   }
   out.sort((a, b) =>
+    (b.isFamily ? 1 : 0) - (a.isFamily ? 1 : 0) ||
     (b.exactLast ? 1 : 0) - (a.exactLast ? 1 : 0) ||
     a.yearGap - b.yearGap ||
     ((b.loc ? 1 : 0) - (a.loc ? 1 : 0)));
   return out.slice(0, limit || 8);
+};
+
+/* "tried and failed" often means the FAG memorial is filed at the WRONG cemetery.
+   Look for the same person in the OTHER nearby cemeteries' memorials + registers. */
+CS.crossCemeteryMatches = function (models, req, ownModel) {
+  const out = [];
+  if (!req.nl || (!req.dy && !req.by)) return out;
+  for (const model of models) {
+    if (model === ownModel) continue;
+    for (const m of model.memorials) {
+      if (m.nl !== req.nl) continue;
+      if (m.mid === req.mid) continue;
+      const firstOk = req.cf && m.cf && (req.cf === m.cf || req.fr === m.fr);
+      if (!firstOk) continue;
+      const dyOk = req.dy && m.dy && Math.abs(req.dy - m.dy) <= 1;
+      const byOk = req.by && m.by && Math.abs(req.by - m.by) <= 1;
+      if (!dyOk && !byOk) continue;
+      if ((req.dy && m.dy && Math.abs(req.dy - m.dy) > 1) || (req.by && m.by && Math.abs(req.by - m.by) > 1)) continue;
+      out.push({ kind: 'mem', item: m, model });
+      if (out.length >= 3) return out;
+    }
+    for (const r of model.roster) {
+      if (r.mem) continue;
+      if (r.nl !== req.nl) continue;
+      const firstOk = req.cf && r.cf && (req.cf === r.cf || req.fr === r.fr);
+      if (!firstOk) continue;
+      const dyOk = req.dy && r.dy && Math.abs(req.dy - r.dy) <= 1;
+      if (!dyOk) continue;
+      out.push({ kind: 'ros', item: r, model });
+      if (out.length >= 3) return out;
+    }
+  }
+  return out;
+};
+
+/* era -> section suggestion: when a plotless request has a death year, say where
+   that era's burials cluster in this cemetery */
+CS.suggestSection = function (model, dy) {
+  if (!dy) return null;
+  if (!model._eraSecs) {
+    const secs = new Map();
+    for (const m of model.memorials) {
+      if (!m.dy || !m.p || !m.p.section || m.p.section === '*') continue;
+      if (!secs.has(m.p.section)) secs.set(m.p.section, []);
+      secs.get(m.p.section).push(m.dy);
+    }
+    model._eraSecs = secs;
+  }
+  let best = null, bestN = 0, total = 0;
+  for (const [sec, years] of model._eraSecs) {
+    if (years.length < 15) continue;
+    const n = years.reduce((s, y) => s + (Math.abs(y - dy) <= 6 ? 1 : 0), 0);
+    total += n;
+    if (n > bestN) { bestN = n; best = sec; }
+  }
+  if (!best || total < 10 || bestN / total < 0.45) return null;
+  return { section: best, share: Math.round(100 * bestN / total) };
+};
+
+/* research deep links for the truly stuck cases */
+CS.researchLinks = function (person) {
+  const first = person.fn || person.first || '';
+  const last = person.ln || person.last || '';
+  const dy = person.dy || '';
+  const q = encodeURIComponent((first + ' ' + last).trim());
+  const links = [];
+  if (dy) {
+    links.push({
+      label: 'MI death record',
+      url: `https://www.familysearch.org/search/record/results?q.givenName=${encodeURIComponent(first)}&q.surname=${encodeURIComponent(last)}&q.deathLikeDate.from=${dy - 2}&q.deathLikeDate.to=${dy + 2}&q.deathLikePlace=Michigan`,
+    });
+    if (dy <= 1963) {
+      links.push({
+        label: 'newspaper obituary',
+        url: `https://chroniclingamerica.loc.gov/search/pages/results/?state=Michigan&andtext=%22${q}%22&date1=${dy}&date2=${Math.min(dy + 1, 1963)}&dateFilterType=yearRange&rows=20`,
+      });
+    }
+  }
+  if (person.veteran || (person.mem && person.mem.veteran)) {
+    links.push({ label: 'VA gravesite locator', url: 'https://gravelocator.cem.va.gov/' });
+  }
+  links.push({ label: 'web search', url: `https://www.google.com/search?q=%22${q}%22${dy ? '+' + dy : ''}+obituary+Michigan` });
+  return links;
 };
 
 /* ---------------- search ---------------- */
@@ -853,6 +979,8 @@ CS.parseRequestsJson = function (text, cem) {
       bd: r.birthDate || r.bd || '', dd: r.deathDate || r.dd || '',
       plot: r.longPlot || r.plot || '', notes: r.notes || '',
       req: r.reqPublicName || r.req || '', created: r.dateCreated || r.created || '',
+      claimed: r.dateClaimed || r.claimed || '',
+      problem: String(r.problemDetails || r.problems || r.problem || '').replace(/\s+/g, ' ').trim().substring(0, 140),
       lat, lng,
     };
   }).filter(r => r.mid);
