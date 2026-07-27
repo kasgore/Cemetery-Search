@@ -22,3 +22,4 @@ desktop.ini
 # --- Python ---
 __pycache__/
 *.pyc
+server/data/
