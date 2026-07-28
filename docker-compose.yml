@@ -2,7 +2,7 @@
 #
 # This file is for repo-based deploys (Portainer repository mode or
 # `docker compose up` from a checkout). For the Pi's web-editor + image
-# workflow use docker/portainer-stack.yml instead — it has no build block.
+# workflow use docker/cemetery-search-stack.yml instead — it has no build block.
 #
 # The app listens on 8420/8443 inside the container; the stack maps the
 # standard ports onto them (change only the left-hand numbers if 80/443 are

@@ -11,7 +11,7 @@ next to it — the "lstat /data/compose/…/docker" error). Instead:
    requirements.txt app.py refresher.py index.html cemetery-search.html
    app-*.js cemetery-data.js xlsx.full.min.js sw.js manifest.webmanifest
    icons geometry seed`), then Build.
-2. **Stacks → Add stack → Web editor** — paste `docker/portainer-stack.yml`
+2. **Stacks → Add stack → Web editor** — paste `docker/cemetery-search-stack.yml`
    (image-only, no build) and deploy.
 
 Updating later = rebuild the image from a fresh tarball (same name), then

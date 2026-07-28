@@ -1,7 +1,7 @@
 # Rebuilds docker\cemetery-search-build.tar — the Portainer build context.
 # Run:  powershell -File build.ps1   (from this folder, or double-click)
 # Then: Portainer > Images > Build a new image > name cemetery-search:latest
-#       > upload the tar > deploy/update the stack (docker/portainer-stack.yml).
+#       > upload the tar > deploy/update the stack (docker/cemetery-search-stack.yml).
 #
 # Layout inside the tar: Dockerfile at root beside the app files — exactly
 # the build context docker/Dockerfile expects. Uses Windows' native tar.exe

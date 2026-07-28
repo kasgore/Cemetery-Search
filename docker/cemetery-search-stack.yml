@@ -1,0 +1,24 @@
+services:
+  cemetery-search:
+    image: cemetery-search:latest
+    container_name: cemetery-search
+    restart: unless-stopped
+    environment:
+      PORT: "80"
+      HTTPS_PORT: "443"
+      REFRESH_HOURS: "6"
+      RADIUS_MILES: "15"
+      CERT_HOSTS: "192.168.5.14,localhost"
+      TZ: "America/New_York"
+    volumes:
+      - cemetery_data:/data
+    networks:
+      InternalNetwork:
+        ipv4_address: 192.168.5.14
+
+volumes:
+  cemetery_data:
+
+networks:
+  InternalNetwork:
+    external: true
