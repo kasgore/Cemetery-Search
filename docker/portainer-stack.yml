@@ -1,27 +1,36 @@
 # Cemetery Search — Portainer WEB-EDITOR stack (no build).
 #
-# Pairs with an image already present on the host: build it once via
-# Portainer > Images > Build a new image > Upload, using
-# cemetery-search-image-build.tar.gz (Dockerfile at archive root), image
-# name `cemetery-search:latest`. Then paste THIS file in
-# Stacks > Add stack > Web editor and deploy.
+# House pattern (same as the sportsbets container): the container joins the
+# existing macvlan "InternalNetwork" and gets its own LAN IP — no port
+# mapping, so the app itself listens on 80/443 (PORT/HTTPS_PORT overrides).
 #
-# (The docker-compose.yml files with `build:` blocks are for hosts that
-# have the repo files — they can never work pasted into the web editor.)
+# Image first: Portainer > Images > Build a new image > name
+# cemetery-search:latest > Upload > docker/cemetery-search-build.tar
+# (rebuild it any time with docker/build.ps1).
+#
+# macvlan quirk: the Pi itself can't reach 192.168.5.14 — every OTHER
+# device on the LAN can.
 services:
   cemetery-search:
     image: cemetery-search:latest
     container_name: cemetery-search
     restart: unless-stopped
-    ports:
-      - "80:8420"     # http
-      - "443:8443"    # https (self-signed)
     environment:
+      PORT: "80"                  # macvlan: listen on the real ports
+      HTTPS_PORT: "443"
       REFRESH_HOURS: "6"          # photo-request refresh cadence
       RADIUS_MILES: "15"          # auto-include cemeteries with requests within this range
       CERT_HOSTS: "192.168.5.14,localhost"   # SANs for the self-signed https cert
+      TZ: "America/New_York"
     volumes:
       - cemetery_data:/data       # caches + refreshed dataset survive rebuilds
+    networks:
+      InternalNetwork:
+        ipv4_address: 192.168.5.14
 
 volumes:
   cemetery_data:
+
+networks:
+  InternalNetwork:
+    external: true                # join the EXISTING macvlan, don't create one
