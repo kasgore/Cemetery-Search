@@ -109,6 +109,87 @@ async function syncProgress() {
 }
 setTimeout(syncProgress, 2500);   // boot: pull the server copy and merge
 
+/* field photos: reference copies so a day's shots match their graves.
+   Local-first in IndexedDB (works in dead zones), synced to the server
+   whenever it's reachable — over Tailscale that's usually within seconds. */
+const photoDB = {
+  _db: null,
+  open() {
+    if (this._db) return Promise.resolve(this._db);
+    return new Promise((res, rej) => {
+      const rq = indexedDB.open('cemsearch-photos', 1);
+      rq.onupgradeneeded = () => rq.result.createObjectStore('photos');
+      rq.onsuccess = () => { this._db = rq.result; res(this._db); };
+      rq.onerror = () => rej(rq.error);
+    });
+  },
+  async put(pk, rec) {
+    const db = await this.open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('photos', 'readwrite');
+      tx.objectStore('photos').put(rec, pk);
+      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+    });
+  },
+  async get(pk) {
+    const db = await this.open();
+    return new Promise((res, rej) => {
+      const rq = db.transaction('photos').objectStore('photos').get(pk);
+      rq.onsuccess = () => res(rq.result || null); rq.onerror = () => rej(rq.error);
+    });
+  },
+  async del(pk) {
+    const db = await this.open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('photos', 'readwrite');
+      tx.objectStore('photos').delete(pk);
+      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+    });
+  },
+  async keys() {
+    const db = await this.open();
+    return new Promise((res, rej) => {
+      const rq = db.transaction('photos').objectStore('photos').getAllKeys();
+      rq.onsuccess = () => res(rq.result || []); rq.onerror = () => rej(rq.error);
+    });
+  },
+};
+// downscale to a reference copy (~1600px JPEG) — the FULL-RES original stays
+// in the phone's gallery and is what gets uploaded to Find a Grave
+function shrinkPhoto(file) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(img.width * k); cv.height = Math.round(img.height * k);
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      URL.revokeObjectURL(img.src);
+      cv.toBlob(b => b ? res(b) : rej(new Error('encode failed')), 'image/jpeg', 0.82);
+    };
+    img.onerror = () => rej(new Error('not an image'));
+    img.src = URL.createObjectURL(file);
+  });
+}
+let photoSyncBusy = false;
+async function syncPhotos() {
+  if (photoSyncBusy) return;
+  photoSyncBusy = true;
+  try {
+    for (const pk of await photoDB.keys()) {
+      const rec = await photoDB.get(pk);
+      if (!rec || rec.synced) continue;
+      const res = await fetch('./api/photo/' + encodeURIComponent(pk), {
+        method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: rec.blob,
+      });
+      if (res.ok) await photoDB.put(pk, { ...rec, synced: true });
+      if (guideTarget && guideTarget.pk === pk) renderGuidePhoto();
+    }
+  } catch (e) { /* unreachable server — retry on next change/boot */ }
+  photoSyncBusy = false;
+}
+setTimeout(syncPhotos, 3500);
+
 const models = new Map();
 function getModel(cemId) {
   cemId = String(cemId);
@@ -156,7 +237,7 @@ function setProgress(pk, patch) {
   // an emptied entry becomes a timestamped tombstone (not a delete) so
   // un-marking a grave propagates through the server backup instead of the
   // old state syncing back
-  if (!merged.st && !merged.note && !merged.gps) store.progress[pk] = { ts: merged.ts };
+  if (!merged.st && !merged.note && !merged.gps && !merged.photo && !merged.up) store.progress[pk] = { ts: merged.ts };
   else store.progress[pk] = merged;
   save();
   scheduleProgressSync();
@@ -461,12 +542,26 @@ function renderFinished() {
   const wrap = $('walk-list');
   wrap.innerHTML = '';
   const rows = [];
+  const openMids = new Set();
   for (const c of DS.cemeteries) {
     const model = getModel(c.id);
     if (!model) continue;
     for (const r of model.requests) {
+      openMids.add(String(r.mid));
       const p = progressOf(r.mid);
-      if (['done', 'nostone', 'notfound'].includes(p.st || '')) rows.push({ r, model, p });
+      if (['done', 'nostone', 'notfound'].includes(p.st || '')) rows.push({ r, model, p, fulfilled: false });
+    }
+  }
+  // finished work whose request has VANISHED from FAG's open list — the
+  // refresher re-pulls requests every few hours, so a disappeared request
+  // usually means the upload went through and the family got their photo
+  for (const [pk, p] of Object.entries(store.progress)) {
+    if (!['done', 'nostone', 'notfound'].includes(p.st || '')) continue;
+    if (!/^\d+$/.test(pk) || openMids.has(pk)) continue;
+    for (const c of DS.cemeteries) {
+      const model = getModel(c.id);
+      const mem = model && model.memById.get(+pk);
+      if (mem) { rows.push({ r: { name: mem.name, mid: mem.mid, by: mem.by, dy: mem.dy }, model, p, fulfilled: true }); break; }
     }
   }
   rows.sort((a, b) => (b.p.ts || 0) - (a.p.ts || 0));
@@ -474,23 +569,41 @@ function renderFinished() {
     wrap.innerHTML = '<div class="empty-state"><div class="ornament">❧</div>Nothing finished yet — outcomes you mark will collect here for fulfilling on Find a Grave.</div>';
     return;
   }
+  // pipeline counts: photographing is half the mission — the upload is the payoff
+  const toUpload = rows.filter(x => x.p.st === 'done' && !x.p.up && !x.fulfilled).length;
+  const uploaded = rows.filter(x => x.p.st === 'done' && x.p.up && !x.fulfilled).length;
+  const confirmed = rows.filter(x => x.fulfilled).length;
+  const head = document.createElement('div');
+  head.className = 'small';
+  head.style.cssText = 'padding:4px 2px 8px;';
+  head.innerHTML = `<strong>${toUpload}</strong> to upload to Find a Grave · <strong>${uploaded}</strong> uploaded, awaiting FAG · <strong>${confirmed}</strong> confirmed fulfilled ✓`;
+  wrap.appendChild(head);
   const stLabel = { done: '✓ Photographed', nostone: 'No stone found', notfound: 'Not found' };
-  for (const { r, model, p } of rows) {
+  for (const { r, model, p, fulfilled } of rows) {
+    const chip = fulfilled ? '<span class="badge stone">✓ no longer requested — fulfilled</span>'
+      : p.st === 'done' ? (p.up ? '<span class="badge stone">⬆ uploaded</span>' : '<span class="badge rust">⏳ upload pending</span>')
+      : '';
     const card = document.createElement('div');
     card.className = 'tcard st-' + p.st;
     card.innerHTML = `
-      <div class="tname">${esc(r.name)}<span class="years">${CS.yearsOf(r)}</span></div>
-      <div class="tmeta"><span class="lbl">${esc(model.cem.name)}</span> ${stLabel[p.st]}${p.ts ? ' · ' + new Date(p.ts).toLocaleDateString() : ''}</div>
+      <div class="tname">${esc(r.name)}<span class="years">${CS.yearsOf(r)}</span> ${chip}</div>
+      <div class="tmeta"><span class="lbl">${esc(model.cem.name)}</span> ${stLabel[p.st]}${p.ts ? ' · ' + new Date(p.ts).toLocaleDateString() : ''}${p.photo ? ' · 📷 photo attached' : ''}</div>
       ${p.note ? `<div class="reqnote">${esc(p.note)}</div>` : ''}
       ${p.gps ? `<div class="tmeta">📍 ${p.gps.lat}, ${p.gps.lng} (${fmtAcc(p.gps.acc)}) <button class="mini act-copy">Copy GPS</button></div>` : ''}
       <div class="trow-actions">
         <a class="mini" style="text-decoration:none;" href="https://www.findagrave.com/memorial/${r.mid}" target="_blank" rel="noopener">Open on Find a Grave ↗</a>
+        ${p.st === 'done' && !fulfilled ? `<button class="mini act-up">${p.up ? '↩ not uploaded' : '⬆ Mark uploaded'}</button>` : ''}
         <button class="mini act-reopen">↩ Reopen</button>
       </div>`;
     const cp = card.querySelector('.act-copy');
     if (cp) cp.addEventListener('click', () => {
       navigator.clipboard && navigator.clipboard.writeText(p.gps.lat + ', ' + p.gps.lng)
         .then(() => toast('GPS copied — paste into the memorial\'s location on Find a Grave'), () => toast('Copy failed'));
+    });
+    const up = card.querySelector('.act-up');
+    if (up) up.addEventListener('click', () => {
+      setProgress(String(r.mid), { up: p.up ? 0 : Date.now(), st: 'done' });
+      renderWalk();
     });
     card.querySelector('.act-reopen').addEventListener('click', () => {
       setProgress(String(r.mid), { st: '' });
@@ -786,6 +899,7 @@ function openGuide(target, model) {
   $('guide-neighbors').innerHTML = model ? neighborsHtml(target, model) : '';
   if (model) wireLeadButtons($('guide-neighbors'), model);
   syncGuideButtons();
+  renderGuidePhoto();
 
   $('guide').classList.add('open');
   document.body.style.overflow = 'hidden';
@@ -817,11 +931,64 @@ function closeGuide() {
 $('guide-close').addEventListener('click', closeGuide);
 
 function syncGuideButtons() {
-  const st = guideTarget && guideTarget.pk ? (progressOf(guideTarget.pk).st || '') : '';
+  const p = guideTarget && guideTarget.pk ? progressOf(guideTarget.pk) : {};
+  const st = p.st || '';
   $('guide-done').textContent = st === 'done' ? '✔ Photographed' : '✓ Photographed';
   $('guide-nostone').textContent = st === 'nostone' ? '✔ No stone' : 'No stone found';
   $('guide-notfound').textContent = st === 'notfound' ? '✔ Not found' : 'Not found';
+  // second stage of the pipeline: field photo taken -> uploaded to FAG at home
+  const upBtn = $('guide-uploaded');
+  upBtn.style.display = st === 'done' ? '' : 'none';
+  upBtn.textContent = p.up ? '✔ Uploaded to FAG' : '⬆ Uploaded to FAG';
+  upBtn.classList.toggle('on', !!p.up);
 }
+$('guide-uploaded').addEventListener('click', () => {
+  if (!guideTarget || !guideTarget.pk) return;
+  const was = progressOf(guideTarget.pk).up;
+  setProgress(guideTarget.pk, { up: was ? 0 : Date.now(), st: 'done' });
+  syncGuideButtons();
+  toast(was ? 'Marked not uploaded yet' : 'Marked uploaded to Find a Grave ✓');
+});
+/* attach a field photo to this grave */
+async function renderGuidePhoto() {
+  const row = $('guide-photo-row'), img = $('guide-photo-thumb'), state = $('guide-photo-state');
+  if (!guideTarget || !guideTarget.pk) { row.style.display = 'none'; return; }
+  const rec = await photoDB.get(guideTarget.pk).catch(() => null);
+  if (rec) {
+    img.src = URL.createObjectURL(rec.blob);
+    state.textContent = rec.synced ? '☁ on the server' : '⌛ will sync to the server';
+    row.style.display = 'flex';
+  } else {
+    // maybe it lives only on the server (taken on another device)
+    const url = './api/photo/' + encodeURIComponent(guideTarget.pk);
+    const res = await fetch(url, { method: 'GET' }).catch(() => null);
+    if (res && res.ok) {
+      img.src = url + '?t=' + Date.now();
+      state.textContent = '☁ from the server';
+      row.style.display = 'flex';
+    } else row.style.display = 'none';
+  }
+}
+$('guide-photo').addEventListener('click', () => $('guide-photo-input').click());
+$('guide-photo-input').addEventListener('change', async () => {
+  const f = $('guide-photo-input').files[0];
+  $('guide-photo-input').value = '';
+  if (!f || !guideTarget || !guideTarget.pk) return;
+  try {
+    const blob = await shrinkPhoto(f);
+    await photoDB.put(guideTarget.pk, { blob, ts: Date.now(), synced: false });
+    setProgress(guideTarget.pk, { photo: 1 });   // flag rides along in progress sync
+    renderGuidePhoto();
+    toast('Photo attached — reference copy; upload the full-res original from your gallery to Find a Grave');
+    syncPhotos();
+  } catch (e) { toast('Could not read that photo'); }
+});
+$('guide-photo-del').addEventListener('click', async () => {
+  if (!guideTarget || !guideTarget.pk) return;
+  await photoDB.del(guideTarget.pk).catch(() => {});
+  setProgress(guideTarget.pk, { photo: 0 });
+  renderGuidePhoto();
+});
 function guideSetState(v, extraTip) {
   if (!guideTarget || !guideTarget.pk) return;
   const cur = progressOf(guideTarget.pk).st;

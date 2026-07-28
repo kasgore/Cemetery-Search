@@ -500,6 +500,14 @@
       <button class="primary" id="guide-done">&#x2713; Photographed</button>
       <button class="secondary" id="guide-nostone">No stone found</button>
       <button class="secondary" id="guide-notfound">Not found</button>
+      <button class="secondary" id="guide-photo">📷 Attach photo</button>
+      <button class="secondary" id="guide-uploaded" style="display:none;">⬆ Uploaded to FAG</button>
+      <input type="file" id="guide-photo-input" accept="image/*" capture="environment" style="display:none;">
+      <div id="guide-photo-row" style="grid-column:1/-1; display:none; align-items:center; gap:8px;">
+        <img id="guide-photo-thumb" style="max-height:72px; border-radius:4px; border:1px solid var(--line);" alt="attached photo">
+        <span id="guide-photo-state" class="small"></span>
+        <button class="mini" id="guide-photo-del">✕ remove</button>
+      </div>
       <textarea id="guide-note" class="texty" placeholder="Field note (auto-saves)…" style="grid-column:1/-1; min-height:44px; font-family:var(--font-mono); font-size:0.8rem; padding:8px;"></textarea>
     </div>
     <div class="neighbors" id="guide-neighbors"></div>

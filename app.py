@@ -13,6 +13,7 @@ REFRESH_HOURS (6), RADIUS_MILES (15), AUTO_REFRESH=0 to disable
 self-updating, DATA_DIR, SITE_DIR.
 """
 import os
+import re
 import ssl
 import subprocess
 import threading
@@ -118,6 +119,48 @@ def post_progress():
             stored[pk] = v
     refresher.write_state("progress-backup.json", stored)
     return jsonify({"ok": True, "progress": stored})
+
+
+# Field photos: reference copies of stone photos, keyed by the same pk as
+# progress ("<memorialId>" or "ros:<key>"). Stored in the data volume, so
+# they survive image rebuilds like everything else.
+def _photo_path(pk):
+    if not re.fullmatch(r"\d+|ros:\w+", pk):   # the only pk shapes the app makes
+        return None
+    d = os.path.join(DATA_DIR, "photos")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, pk.replace(":", "_") + ".jpg")
+
+
+@app.get("/api/photos")
+def list_photos():
+    d = os.path.join(DATA_DIR, "photos")
+    if not os.path.isdir(d):
+        return jsonify({"photos": []})
+    return jsonify({"photos": [f[:-4].replace("ros_", "ros:", 1) for f in os.listdir(d) if f.endswith(".jpg")]})
+
+
+@app.get("/api/photo/<pk>")
+def get_photo(pk):
+    p = _photo_path(pk)
+    if not p or not os.path.exists(p):
+        return jsonify({"error": "not found"}), 404
+    return send_from_directory(os.path.dirname(p), os.path.basename(p), max_age=0)
+
+
+@app.post("/api/photo/<pk>")
+def put_photo(pk):
+    p = _photo_path(pk)
+    if not p:
+        return jsonify({"error": "bad key"}), 400
+    data = request.get_data(cache=False)
+    if not data or len(data) > 5 * 1024 * 1024:
+        return jsonify({"error": "empty or too large"}), 400
+    if not data.startswith(b"\xff\xd8"):   # JPEG magic — the app only sends JPEG
+        return jsonify({"error": "not a jpeg"}), 400
+    with open(p, "wb") as f:
+        f.write(data)
+    return jsonify({"ok": True})
 
 
 def _loop():
