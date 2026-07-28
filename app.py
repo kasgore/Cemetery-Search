@@ -38,7 +38,7 @@ ALLOWED_DIRS = {"icons"}
 NEVER_CACHE = {"index.html", "cemetery-data.js", "sw.js"}
 
 app = Flask(__name__)
-_state = {"refreshing": False, "last_error": None, "wake": threading.Event()}
+_state = {"refreshing": False, "last_error": None, "wake": threading.Event(), "urls": []}
 
 
 @app.get("/")
@@ -107,6 +107,8 @@ def _loop():
             refresher.log(f"refresh cycle failed: {e}")
         _state["refreshing"] = False
         _state["wake"].clear()
+        if _state["urls"]:  # re-announce after the cycle's log spew scrolls the startup line away
+            refresher.log("app is listening at " + " and ".join(_state["urls"]))
         _state["wake"].wait(timeout=REFRESH_HOURS * 3600)
 
 
@@ -172,7 +174,9 @@ def serve_https(port):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8420"))
     https_port = os.environ.get("HTTPS_PORT")
+    _state["urls"] = [f"http://localhost:{port}/"]
     if https_port:
+        _state["urls"].append(f"https://localhost:{https_port}/")
         threading.Thread(target=serve_https, args=(int(https_port),), daemon=True, name="https").start()
     try:
         from waitress import serve
