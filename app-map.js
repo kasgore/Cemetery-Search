@@ -277,7 +277,19 @@ MapView.prototype.draw = function () {
       const p = this.llToScreen(pt.lat, pt.lng);
       if (!inView(p)) continue;
       ctx.lineWidth = 1.2;
-      if (pt.reg) {
+      if (pt.pin) {
+        // field-confirmed (you stood there and saved GPS) — blue diamond,
+        // white-rimmed, unmistakable on any background
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y - 4.2); ctx.lineTo(p.x + 4.2, p.y);
+        ctx.lineTo(p.x, p.y + 4.2); ctx.lineTo(p.x - 4.2, p.y);
+        ctx.closePath();
+        ctx.fillStyle = '#2b5c7a';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+      } else if (pt.reg) {
         // register burial at a located position — hollow square, so the eye
         // can tell "the book says here" from "a photo was taken here"
         ctx.strokeStyle = onImg ? 'rgba(255,253,247,0.85)' : 'rgba(122,101,62,0.7)';

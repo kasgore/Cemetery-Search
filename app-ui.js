@@ -1237,7 +1237,9 @@ function modelLayerCache(model) {
       const ck = m.lat.toFixed(6) + ',' + m.lng.toFixed(6);
       if (seenCoord.has(ck)) continue;                  // bulk-pinned families: one dot
       seenCoord.add(ck);
-      graves.push({ lat: m.lat, lng: m.lng, label: m.last, ph: m.hasGravePhoto, mid: m.mid, model });
+      // pin=true marks a field-confirmed position (you stood there) — drawn
+      // as a blue diamond, the map's strongest statement
+      graves.push({ lat: m.lat, lng: m.lng, label: m.last, ph: m.hasGravePhoto, mid: m.mid, model, pin: !!m.fieldGps });
     }
   }
   // register burials that locate confidently get dots too (hollow squares) —
@@ -1246,6 +1248,10 @@ function modelLayerCache(model) {
   for (const r of model.roster) {
     if (r.mem && r.mem.lat != null) continue;   // already drawn via the memorial
     if (!r.section) continue;
+    if (r.fieldGps) {   // field-confirmed register burial: diamond at the pin itself
+      graves.push({ lat: r.fieldGps.lat, lng: r.fieldGps.lng, label: r.last, ph: false, reg: true, rosKey: r.key, model, pin: true });
+      continue;
+    }
     const loc = CS.locate(model, { section: r.section, sub: r.sub, block: r.block, lot: r.lot, grave: r.grave });
     if (!loc || (loc.level !== 'lot' && loc.level !== 'adjacent')) continue;
     graves.push({ lat: loc.lat, lng: loc.lng, label: r.last, ph: false, reg: true, rosKey: r.key, model });
