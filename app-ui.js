@@ -1240,6 +1240,16 @@ function modelLayerCache(model) {
       graves.push({ lat: m.lat, lng: m.lng, label: m.last, ph: m.hasGravePhoto, mid: m.mid, model });
     }
   }
+  // register burials that locate confidently get dots too (hollow squares) —
+  // often the very stones being searched for: people the register places
+  // but no Find a Grave photo has pinned
+  for (const r of model.roster) {
+    if (r.mem && r.mem.lat != null) continue;   // already drawn via the memorial
+    if (!r.section) continue;
+    const loc = CS.locate(model, { section: r.section, sub: r.sub, block: r.block, lot: r.lot, grave: r.grave });
+    if (!loc || (loc.level !== 'lot' && loc.level !== 'adjacent')) continue;
+    graves.push({ lat: loc.lat, lng: loc.lng, label: r.last, ph: false, reg: true, rosKey: r.key, model });
+  }
   for (const m of model.maps) {
     if (!m.transform) continue;
     for (const en of m.entries) {
@@ -1323,6 +1333,19 @@ function ensureMap() {
           loc: { lat: mem.lat, lng: mem.lng, acc: 8, level: 'gps' },
           pBest: mem.p && mem.p.section ? mem.p : null, pRos: null,
           plot: mem.plot,
+        }, hit.model);
+        return;
+      }
+      if (hit && hit.reg && hit.model) {
+        // register dot: open the guide on the roster burial at its located spot
+        const r = hit.model.roster.find(x => x.key === hit.rosKey);
+        if (!r) return;
+        const loc = CS.locate(hit.model, { section: r.section, sub: r.sub, block: r.block, lot: r.lot, grave: r.grave });
+        openGuide({
+          name: r.name, ln: r.last || '', by: r.by || null, dy: r.dy || null,
+          mid: r.mem ? r.mem.mid : null, rosKey: r.key, loc,
+          pBest: null, pRos: { section: r.section, sub: r.sub, block: r.block, lot: r.lot, grave: r.grave },
+          plot: '',
         }, hit.model);
       }
     },

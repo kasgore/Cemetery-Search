@@ -277,15 +277,22 @@ MapView.prototype.draw = function () {
       const p = this.llToScreen(pt.lat, pt.lng);
       if (!inView(p)) continue;
       ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, 2.1, 0, Math.PI * 2);
-      if (pt.ph) {
-        ctx.fillStyle = onImg ? 'rgba(255,253,247,0.95)' : 'rgba(74,93,58,0.8)';
-        ctx.fill();
-        if (onImg) { ctx.strokeStyle = 'rgba(20,24,15,0.9)'; ctx.stroke(); }
+      if (pt.reg) {
+        // register burial at a located position — hollow square, so the eye
+        // can tell "the book says here" from "a photo was taken here"
+        ctx.strokeStyle = onImg ? 'rgba(255,253,247,0.85)' : 'rgba(122,101,62,0.7)';
+        ctx.strokeRect(p.x - 2, p.y - 2, 4, 4);
       } else {
-        ctx.strokeStyle = onImg ? 'rgba(255,253,247,0.9)' : 'rgba(74,93,58,0.65)';
-        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 2.1, 0, Math.PI * 2);
+        if (pt.ph) {
+          ctx.fillStyle = onImg ? 'rgba(255,253,247,0.95)' : 'rgba(74,93,58,0.8)';
+          ctx.fill();
+          if (onImg) { ctx.strokeStyle = 'rgba(20,24,15,0.9)'; ctx.stroke(); }
+        } else {
+          ctx.strokeStyle = onImg ? 'rgba(255,253,247,0.9)' : 'rgba(74,93,58,0.65)';
+          ctx.stroke();
+        }
       }
       if (showNames && pt.label) graveLabels.push([pt.label, p.x + 4, p.y - 3]);
     }
@@ -422,7 +429,8 @@ MapView.prototype.draw = function () {
     ctx.setLineDash([]);
   }
 
-  // targets
+  // targets — white-rimmed on photography, else every green/dark pin
+  // vanishes into grass and tree canopy the moment it's marked done
   for (const t of L.targets) {
     const p = this.llToScreen(t.lat, t.lng);
     if (!inView(p)) continue;
@@ -431,12 +439,13 @@ MapView.prototype.draw = function () {
     ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
     ctx.fillStyle = t.color;
     ctx.fill();
-    ctx.strokeStyle = 'rgba(20,24,15,0.75)';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = onImg ? 'rgba(255,255,255,0.95)' : 'rgba(20,24,15,0.75)';
+    ctx.lineWidth = onImg ? 2 : 1;
     ctx.stroke();
     if (t.label && s > 2.1) {
-      ctx.fillStyle = 'rgba(20,24,15,0.92)';
       ctx.font = '10px JetBrains Mono, monospace';
+      halo(t.label, p.x + r + 3, p.y + 3);
+      ctx.fillStyle = 'rgba(20,24,15,0.92)';
       ctx.fillText(t.label, p.x + r + 3, p.y + 3);
     }
   }

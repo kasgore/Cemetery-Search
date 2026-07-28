@@ -79,7 +79,13 @@ DEFAULT_CONFIG = {
         {"cemetery_id": 159973, "static": True, "seed": "seed/roster-159973.json"},    # Lee Twp
     ],
     # static plat-map geometry per cemetery (produced by tools/ pipeline)
-    "geometry": {"1252": "geometry/oakgrove.json", "1506": "geometry/riverside.json"},
+    "geometry": {
+        "1252": "geometry/oakgrove.json", "1506": "geometry/riverside.json",
+        # synthetic row-line grids fit from walk-order registers × GPS anchors
+        # (tools/build-walk-rows.js) — Chippewa's rows didn't fit a line, skipped
+        "1434": "geometry/walkrows-1434.json", "445": "geometry/walkrows-445.json",
+        "2357025": "geometry/walkrows-2357025.json", "159973": "geometry/walkrows-159973.json",
+    },
     # who holds the burial book — the call to make when a grave can't be found.
     # Sources: Gratiot Co. Cemetery Listing 2025-03-24 (gratiotmi.com), city/township sites.
     "contacts": {
