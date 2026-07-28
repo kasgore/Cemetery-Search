@@ -80,6 +80,35 @@ if (store.updates && (store.updates.requests || store.updates.memorials || store
   }
 }
 
+/* field-log backup: progress (finds/notes/GPS pins) mirrors to the server so
+   a lost phone or an evicted browser cache never loses a find. Per-grave
+   newest-ts merge on both ends — multiple devices stay consistent. On static
+   hosting (no /api) the fetch just fails and everything stays local-only. */
+let syncTimer = null;
+function scheduleProgressSync() { clearTimeout(syncTimer); syncTimer = setTimeout(syncProgress, 4000); }
+async function syncProgress() {
+  const el = document.getElementById('sync-status');
+  try {
+    const res = await fetch('./api/progress', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ progress: store.progress }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const merged = (await res.json()).progress || {};
+    let adopted = 0;
+    for (const [pk, v] of Object.entries(merged)) {
+      const mine = store.progress[pk];
+      if (!mine || (v.ts || 0) > (mine.ts || 0)) { store.progress[pk] = v; adopted++; }
+    }
+    if (adopted) { save(); updateStats(); }
+    const n = Object.values(store.progress).filter(p => p.st || p.note || p.gps).length;
+    if (el) el.textContent = `☁ field log backed up to the server — ${n} entr${n === 1 ? 'y' : 'ies'} safe`;
+  } catch (e) {
+    if (el) el.textContent = '';
+  }
+}
+setTimeout(syncProgress, 2500);   // boot: pull the server copy and merge
+
 const models = new Map();
 function getModel(cemId) {
   cemId = String(cemId);
@@ -124,9 +153,13 @@ function activeCemList() {
 function progressOf(pk) { return store.progress[pk] || {}; }
 function setProgress(pk, patch) {
   const merged = Object.assign({}, store.progress[pk] || {}, patch, { ts: Date.now() });
-  if (!merged.st && !merged.note && !merged.gps) delete store.progress[pk];
+  // an emptied entry becomes a timestamped tombstone (not a delete) so
+  // un-marking a grave propagates through the server backup instead of the
+  // old state syncing back
+  if (!merged.st && !merged.note && !merged.gps) store.progress[pk] = { ts: merged.ts };
   else store.progress[pk] = merged;
   save();
+  scheduleProgressSync();
   updateStats();
 }
 
@@ -709,6 +742,31 @@ function openGuide(target, model) {
   target.pk = target.mid ? String(target.mid) : (target.rosKey ? 'ros:' + target.rosKey : null);
   compass.declination = (model && model.meta.declination != null) ? model.meta.declination : -6.6;
   $('guide-name').textContent = target.name;
+  // vitals: everything known about the person, from every source — dates on
+  // the stone are what you match against when you're standing in the row
+  const mem = (target.mid && model) ? model.memById.get(target.mid) : null;
+  const ros = (target.rosKey && model) ? model.roster.find(r => String(r.key) === String(target.rosKey))
+    : (mem && mem.ros) || target.ros || null;
+  const vit = [];
+  const bd = (ros && ros.bd) || target.bd || '';
+  const dd = (ros && ros.dd) || target.dd || '';
+  const by = target.by || (mem && mem.by) || (ros && ros.by) || 0;
+  const dy = target.dy || (mem && mem.dy) || (ros && ros.dy) || 0;
+  if (bd || dd) vit.push([bd && 'b. ' + bd, dd && 'd. ' + dd].filter(Boolean).join('   '));
+  else if (by || dy) vit.push((by || '?') + ' – ' + (dy || '?'));
+  if (by && dy && dy >= by) vit.push('age ' + ((bd && dd) ? (dy - by) : '~' + (dy - by)));
+  if (ros && ros.burial && ros.burial !== dd) vit.push('buried ' + ros.burial);
+  const maiden = (mem && mem.maiden) || (ros && ros.formerName) || '';
+  if (maiden) vit.push('née ' + maiden);
+  if ((mem && mem.veteran) || (ros && ros.veteran) || target.veteran) vit.push('⚑ veteran');
+  if (mem && mem.hasGravePhoto) vit.push('📷 stone photographed — the photo on Find a Grave shows what to look for');
+  $('guide-vitals').textContent = vit.join('  ·  ');
+  // requester hints and register notes often carry the clue that finds it
+  const hints = [];
+  if (target.notes) hints.push('💬 requester: ' + target.notes);
+  if (target.problem) hints.push('⚠ previously reported: ' + target.problem);
+  if (ros && ros.note && !/^sexton record/.test(ros.note)) hints.push('📖 register: ' + ros.note);
+  $('guide-hints').textContent = hints.join('   ');
   const plotBits = [];
   if (model && model.cem) plotBits.push(model.cem.name);
   if (target.plot && !/no location/i.test(target.plot)) plotBits.push(target.plot);
@@ -1400,10 +1458,17 @@ $('import-file').addEventListener('change', e => {
   e.target.value = '';
 });
 $('btn-reset').addEventListener('click', () => {
-  if (!confirm('Clear all check-offs, notes and saved GPS? (Dataset updates are kept.)')) return;
-  store.progress = {};
+  if (!confirm('Clear all check-offs, notes and saved GPS — here AND in the server backup? (Dataset updates are kept.)')) return;
+  // tombstone everything (newest ts) so the server backup adopts the reset
+  // instead of restoring the old entries on next sync
+  const now = Date.now();
+  for (const pk of Object.keys(store.progress)) store.progress[pk] = { ts: now };
   flushSave();
-  rebuild();
+  syncProgress().then(() => {
+    store.progress = {};
+    flushSave();
+    rebuild();
+  });
 });
 $('btn-revert').addEventListener('click', () => {
   if (!confirm('Discard all manual dataset updates and return to the served data? Progress is kept.')) return;

@@ -221,6 +221,9 @@
   #guide.open { display: flex; }
   .guide-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
   .guide-name { font-size: 1.5rem; font-weight: 700; line-height: 1.1; }
+  .guide-vitals { font-family: var(--font-mono); font-size: 0.82rem; color: var(--ink); margin-top: 3px; }
+  .guide-vitals:empty, .guide-hints:empty { display: none; }
+  .guide-hints { font-size: 0.76rem; font-style: italic; color: var(--ink-soft); margin-top: 2px; }
   .guide-plot { font-family: var(--font-mono); font-size: 0.72rem; color: var(--ink-soft); margin-top: 3px; }
   #guide-close { font-size: 1.6rem; background: none; border: none; cursor: pointer; color: var(--stone); padding: 4px 10px; }
   .nav-zone { text-align: center; margin: 8px 0 4px; }
@@ -352,6 +355,7 @@
     <div class="card" id="dataset-card">
       <h2>Loaded Dataset</h2>
       <div id="server-status" class="small" style="margin-bottom:8px;"></div>
+      <div id="sync-status" class="mono small" style="margin-bottom:6px;"></div>
       <div id="dataset-info" class="mono small">No dataset.</div>
       <div class="button-row">
         <button class="secondary" id="btn-export">Export progress</button>
@@ -478,6 +482,8 @@
     <div class="guide-top">
       <div>
         <div class="guide-name" id="guide-name">—</div>
+        <div class="guide-vitals" id="guide-vitals"></div>
+        <div class="guide-hints" id="guide-hints"></div>
         <div class="guide-plot" id="guide-plot">—</div>
       </div>
       <button id="guide-close" aria-label="Close">&times;</button>

@@ -17,7 +17,7 @@ import ssl
 import subprocess
 import threading
 
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory
 
 import refresher
 
@@ -93,6 +93,31 @@ def trigger_refresh():
         return jsonify({"ok": False, "reason": "already refreshing"}), 409
     _state["wake"].set()
     return jsonify({"ok": True})
+
+
+# Field-log backup: the browser's progress store (finds, notes, saved GPS
+# pins) syncs here so a lost phone or evicted browser cache never loses a
+# find. Per-grave newest-timestamp merge — two devices can both contribute.
+@app.get("/api/progress")
+def get_progress():
+    return jsonify({"progress": refresher.read_state("progress-backup.json", {}) or {}})
+
+
+@app.post("/api/progress")
+def post_progress():
+    body = request.get_json(silent=True) or {}
+    incoming = body.get("progress")
+    if not isinstance(incoming, dict):
+        return jsonify({"ok": False, "reason": "no progress object"}), 400
+    stored = refresher.read_state("progress-backup.json", {}) or {}
+    for pk, v in incoming.items():
+        if not isinstance(v, dict):
+            continue
+        old = stored.get(pk)
+        if not old or (v.get("ts") or 0) >= (old.get("ts") or 0):
+            stored[pk] = v
+    refresher.write_state("progress-backup.json", stored)
+    return jsonify({"ok": True, "progress": stored})
 
 
 def _loop():
