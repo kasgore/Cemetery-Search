@@ -1,9 +1,8 @@
 # Cemetery Search — reachable on ports 80 (http) and 443 (https).
 #
-# This root copy is what Portainer REPOSITORY deploys use (compose path
-# docker-compose.yml — the build context must be the repo root). A
-# path-adjusted twin lives at docker/docker-compose.yml for stacks that
-# point there; keep the two in sync.
+# This file is for repo-based deploys (Portainer repository mode or
+# `docker compose up` from a checkout). For the Pi's web-editor + image
+# workflow use docker/portainer-stack.yml instead — it has no build block.
 #
 # The app listens on 8420/8443 inside the container; the stack maps the
 # standard ports onto them (change only the left-hand numbers if 80/443 are
