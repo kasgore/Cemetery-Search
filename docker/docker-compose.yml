@@ -1,30 +1,30 @@
-# Cemetery Search — reachable on ports 80 (http) and 443 (https).
+# Cemetery Search — Portainer stack (docker/ copy).
 #
-# This root copy is what Portainer REPOSITORY deploys use (compose path
-# docker-compose.yml — the build context must be the repo root). A
-# path-adjusted twin lives at docker/docker-compose.yml for stacks that
-# point there; keep the two in sync.
+# Same stack as the repo-root docker-compose.yml, with build paths adjusted
+# to run from this directory (`docker compose -f docker/docker-compose.yml`,
+# or a Portainer stack whose compose path is docker/docker-compose.yml).
+# The repo-root copy exists because Portainer REPOSITORY deploys resolve the
+# build context relative to the compose file — keep the two in sync.
 #
-# The app listens on 8420/8443 inside the container; the stack maps the
-# standard ports onto them (change only the left-hand numbers if 80/443 are
-# taken on the host).
+# Reachable on ports 80 (http) and 443 (https). The app listens on 8420/8443
+# inside the container; the stack maps the standard ports onto them.
 #
 # TWO WAYS to put it on 192.168.5.14 — use exactly one:
 #
-# A) The Pi itself is 192.168.5.14 (or you don't care which host IP):
+# A) The host itself is 192.168.5.14 (or you don't care which host IP):
 #    keep the `ports:` block below and DELETE the `networks:` blocks.
 #
 # B) The CONTAINER gets its own dedicated LAN IP 192.168.5.14 (macvlan):
 #    delete the `ports:` block, uncomment the `networks:` blocks AND the
 #    PORT/HTTPS_PORT env overrides (macvlan has no port mapping — the app
-#    must listen on 80/443 itself), and set `parent:` to the Pi's LAN
+#    must listen on 80/443 itself), and set `parent:` to the host's LAN
 #    interface (usually eth0).
-#    (macvlan quirk: the Pi host itself can't reach the container's IP;
+#    (macvlan quirk: the host itself can't reach the container's IP;
 #    other devices on the LAN can.)
 services:
   cemetery-search:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile
     image: cemetery-search:latest
     container_name: cemetery-search
@@ -51,7 +51,7 @@ volumes:
 #   lan:
 #     driver: macvlan
 #     driver_opts:
-#       parent: eth0              # the Pi's LAN interface
+#       parent: eth0              # the host's LAN interface
 #     ipam:
 #       config:
 #         - subnet: 192.168.5.0/24
