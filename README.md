@@ -17,7 +17,8 @@ A field app for fulfilling Find a Grave photo requests at **38 cemeteries around
   5. **register × GPS cross-anchors**: a register row matched to a GPS-photographed memorial anchors its whole row/lot, so register-only cemeteries become navigable; **field-saved GPS fixes** (Guide → Save GPS) feed the same anchor index, so every stone you confirm sharpens the map for its neighbors;
   6. **family leads** when nothing else exists: same-surname burials with locatable graves (spouses usually share the lot).
 - **Walking list** across all cemeteries (nearest first, drive links) or per cemetery grouped by section, with per-grave status (photographed / no stone / not found), notes, requester hints, and **neighbor packs** (adjacent burials, 📷 = photographed stone to use as a visual anchor).
-- **Guide mode**: declination-corrected compass arrow + live distance + honest accuracy circle; offline canvas map (lot grids, block letters, sections, GPS-tagged graves with surnames at close zoom — solid dot = photographed stone, your blue dot).
+- **Guide mode**: declination-corrected compass arrow + live distance (feet/miles) + honest accuracy circle; offline canvas map with cemetery boundaries, internal drives and gates (OpenStreetMap), lot grids, block letters, sections, GPS-tagged graves with surnames at close zoom (solid dot = photographed stone), collision-culled labels with halos, a feet scale bar, and your blue dot.
+- **Offline field pack**: cemeteries have weak cell signal — the Data tab pre-downloads a cemetery's aerial imagery over Wi-Fi into the device cache (tiles are cache-first and never refetched), so the full map works with zero signal.
 - **Offline search of ~72,000 burials** — memorials + registers, cross-matched.
 - **PWA**: installs to the home screen, fully offline in the field (HTTPS required for GPS/compass — see docker/README.md).
 

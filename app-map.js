@@ -5,7 +5,9 @@
    Layers are plain lat/lng lists prepared by the UI layer:
    { lots:[{lat,lng,label}], blocks:[{lat,lng,label}], roads:[{lat,lng}],
      sections:[{lat,lng,label}], cems:[{lat,lng,label}], targets:[...],
-     graves:[{lat,lng,label,ph}] — GPS-tagged memorials at true position }
+     graves:[{lat,lng,label,ph}] — GPS-tagged memorials at true position,
+     bounds:[{pts:[[lat,lng],...]}] / drives:[{pts:[[lat,lng],...]}] /
+     gates:[{lat,lng}] — cemetery grounds from OpenStreetMap }
    ========================================================== */
 (function () {
 'use strict';
@@ -67,7 +69,7 @@ function MapView(canvas, proj, opts) {
   this.scale = 1.4;                 // px per meter
   this.cx = 0; this.cy = 0;         // world center (m east/north of datum)
   this.user = null;                 // {lat,lng,acc}
-  this.layers = { lots: [], blocks: [], roads: [], sections: [], cems: [], targets: [], graves: [] };
+  this.layers = { lots: [], blocks: [], roads: [], sections: [], cems: [], targets: [], graves: [], bounds: [], drives: [], gates: [] };
   this.highlight = null;            // {lat,lng,acc}
   this.imagery = opts.imagery !== false;
   this._imageryDrawn = false;
@@ -115,7 +117,7 @@ MapView.prototype.drawImagery = function () {
   if (this._imageryDrawn) {
     ctx.fillStyle = 'rgba(255,255,255,0.75)';
     ctx.font = '9px JetBrains Mono, monospace';
-    const txt = 'USGS NAIP imagery';
+    const txt = 'USGS NAIP' + (this.layers.bounds.length ? ' · grounds © OpenStreetMap' : '');
     ctx.fillText(txt, w - ctx.measureText(txt).width - 6, h - 5);
   }
 };
@@ -185,23 +187,96 @@ MapView.prototype.draw = function () {
   const s = this.scale;
   const L = this.layers;
   const inView = p => p.x > -25 && p.y > -25 && p.x < w + 25 && p.y < h + 25;
-  const halo = (txt, x, y) => { // readable labels on top of photography
-    if (!onImg) return;
-    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+  // labels always get a halo — white over photography, parchment over the
+  // plain map — so text stays legible over dots, lines, and each other
+  const halo = (txt, x, y) => {
+    ctx.strokeStyle = onImg ? 'rgba(255,255,255,0.85)' : 'rgba(236,229,212,0.85)';
     ctx.lineWidth = 3;
+    ctx.lineJoin = 'round';
     ctx.strokeText(txt, x, y);
   };
+  // collision culling: a label draws only if it doesn't overlap one already
+  // placed this frame (first-come wins, so draw higher-priority layers first)
+  const placed = [];
+  const tryLabel = (txt, x, y, fh) => {
+    const tw = ctx.measureText(txt).width;
+    const r = { x0: x - 1, y0: y - fh, x1: x + tw + 1, y1: y + 2 };
+    if (placed.length < 500) {
+      for (const q of placed) {
+        if (r.x0 < q.x1 && r.x1 > q.x0 && r.y0 < q.y1 && r.y1 > q.y0) return false;
+      }
+    }
+    placed.push(r);
+    return true;
+  };
+
+  // cemetery boundary + internal drives + gates (OSM) — the ground the rest
+  // of the map stands on; drawn first so everything else layers over it
+  if (L.bounds.length) {
+    for (const b of L.bounds) {
+      ctx.beginPath();
+      for (let i = 0; i < b.pts.length; i++) {
+        const p = this.llToScreen(b.pts[i][0], b.pts[i][1]);
+        i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y);
+      }
+      ctx.closePath();
+      if (!onImg) { ctx.fillStyle = 'rgba(163,177,138,0.14)'; ctx.fill(); }
+      ctx.strokeStyle = onImg ? 'rgba(255,253,247,0.85)' : 'rgba(90,105,70,0.55)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([7, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+  if (s > 0.25 && L.drives.length) {
+    ctx.lineCap = 'round';
+    for (const d of L.drives) {
+      ctx.beginPath();
+      for (let i = 0; i < d.pts.length; i++) {
+        const p = this.llToScreen(d.pts[i][0], d.pts[i][1]);
+        i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y);
+      }
+      // drawn wide-then-narrow so drives read as roads on both backgrounds
+      ctx.strokeStyle = onImg ? 'rgba(20,24,15,0.5)' : 'rgba(148,138,118,0.5)';
+      ctx.lineWidth = Math.min(10, Math.max(2.5, s * 3));
+      ctx.stroke();
+      ctx.strokeStyle = onImg ? 'rgba(255,253,247,0.75)' : 'rgba(236,229,212,0.95)';
+      ctx.lineWidth = Math.min(7, Math.max(1.2, s * 3 - 2));
+      ctx.stroke();
+    }
+    ctx.lineCap = 'butt';
+  }
+  if (s > 0.7 && L.gates.length) {
+    ctx.font = 'bold 11px JetBrains Mono, monospace';
+    for (const g of L.gates) {
+      const p = this.llToScreen(g.lat, g.lng);
+      if (!inView(p)) continue;
+      ctx.fillStyle = onImg ? 'rgba(255,253,247,0.95)' : 'rgba(90,105,70,0.9)';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = onImg ? 'rgba(20,24,15,0.9)' : 'rgba(236,229,212,0.9)';
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      if (s > 2) {
+        halo('gate', p.x + 5, p.y + 4);
+        ctx.fillStyle = onImg ? 'rgba(20,24,15,0.95)' : 'rgba(80,72,58,0.9)';
+        ctx.fillText('gate', p.x + 5, p.y + 4);
+      }
+    }
+  }
 
   // graves: GPS-tagged memorials at their true position (under the plat grid).
   // Solid dot = stone photographed, ring = not — in the field a solid dot is a
-  // stone you can navigate by.
+  // stone you can navigate by. Dots first; labels later so lot numbers get
+  // collision priority over surnames.
+  const graveLabels = [];
   if (s > 0.7 && L.graves.length) {
-    const showNames = s > 4.5;
-    ctx.font = 'italic 8px JetBrains Mono, monospace';
+    const showNames = s > 4;
     for (const pt of L.graves) {
       const p = this.llToScreen(pt.lat, pt.lng);
       if (!inView(p)) continue;
-      ctx.lineWidth = 1.2;   // halo() bumps it to 3 — reset per dot
+      ctx.lineWidth = 1.2;
       ctx.beginPath();
       ctx.arc(p.x, p.y, 2.1, 0, Math.PI * 2);
       if (pt.ph) {
@@ -212,17 +287,13 @@ MapView.prototype.draw = function () {
         ctx.strokeStyle = onImg ? 'rgba(255,253,247,0.9)' : 'rgba(74,93,58,0.65)';
         ctx.stroke();
       }
-      if (showNames && pt.label) {
-        halo(pt.label, p.x + 4, p.y - 3);
-        ctx.fillStyle = onImg ? 'rgba(20,24,15,0.95)' : 'rgba(60,72,48,0.85)';
-        ctx.fillText(pt.label, p.x + 4, p.y - 3);
-      }
+      if (showNames && pt.label) graveLabels.push([pt.label, p.x + 4, p.y - 3]);
     }
   }
   // lot grid
+  const lotLabels = [];
   if (s > 0.55 && L.lots.length) {
     const showNums = s > 3.4;
-    ctx.font = '9px JetBrains Mono, monospace';
     for (const pt of L.lots) {
       const p = this.llToScreen(pt.lat, pt.lng);
       if (!inView(p)) continue;
@@ -235,14 +306,10 @@ MapView.prototype.draw = function () {
         ctx.fillStyle = 'rgba(148,138,118,0.75)';
         ctx.fillRect(p.x - 1.2, p.y - 1.2, 2.4, 2.4);
       }
-      if (showNums && pt.label) {
-        halo(pt.label, p.x + 3, p.y + 3);
-        ctx.fillStyle = onImg ? 'rgba(20,24,15,0.95)' : 'rgba(80,72,58,0.85)';
-        ctx.fillText(pt.label, p.x + 3, p.y + 3);
-      }
+      if (showNums && pt.label) lotLabels.push([pt.label, p.x + 3, p.y + 3]);
     }
   }
-  // roads (redundant over photography)
+  // roads (plat-map road markers, redundant over photography)
   if (s > 0.7 && !onImg) {
     ctx.fillStyle = 'rgba(110,101,87,0.5)';
     ctx.font = '9px JetBrains Mono, monospace';
@@ -251,7 +318,7 @@ MapView.prototype.draw = function () {
       if (inView(p)) ctx.fillText('· road ·', p.x - 16, p.y);
     }
   }
-  // block letters
+  // block letters — landmark text, always drawn (few and far apart)
   if (s > 0.8) {
     ctx.font = 'bold ' + Math.min(15, Math.max(10, s * 4)) + 'px JetBrains Mono, monospace';
     for (const pt of L.blocks) {
@@ -262,6 +329,28 @@ MapView.prototype.draw = function () {
       ctx.fillText(pt.label, p.x, p.y);
     }
   }
+  // lot numbers before surnames: plat navigation beats name browsing when
+  // both want the same pixels
+  if (lotLabels.length) {
+    const fh = Math.min(12, Math.max(9, s * 2.2));
+    ctx.font = fh + 'px JetBrains Mono, monospace';
+    for (const [txt, x, y] of lotLabels) {
+      if (!tryLabel(txt, x, y, fh)) continue;
+      halo(txt, x, y);
+      ctx.fillStyle = onImg ? 'rgba(20,24,15,0.95)' : 'rgba(80,72,58,0.9)';
+      ctx.fillText(txt, x, y);
+    }
+  }
+  if (graveLabels.length) {
+    const fh = Math.min(12.5, Math.max(9.5, s * 2));
+    ctx.font = fh + 'px JetBrains Mono, monospace';
+    for (const [txt, x, y] of graveLabels) {
+      if (!tryLabel(txt, x, y, fh)) continue;
+      halo(txt, x, y);
+      ctx.fillStyle = onImg ? 'rgba(20,24,15,0.95)' : 'rgba(60,72,48,0.9)';
+      ctx.fillText(txt, x, y);
+    }
+  }
   // section names
   ctx.font = 'italic 600 ' + Math.min(17, Math.max(11, s * 9)) + 'px Cormorant Garamond, serif';
   if (s > 0.5) {
@@ -270,7 +359,7 @@ MapView.prototype.draw = function () {
       if (!inView(p)) continue;
       const tw = ctx.measureText(pt.label).width;
       halo(pt.label, p.x - tw / 2, p.y);
-      ctx.fillStyle = onImg ? 'rgba(30,44,22,0.95)' : 'rgba(44,58,36,0.55)';
+      ctx.fillStyle = onImg ? 'rgba(30,44,22,0.95)' : 'rgba(44,58,36,0.65)';
       ctx.fillText(pt.label, p.x - tw / 2, p.y);
     }
   }
@@ -286,6 +375,37 @@ MapView.prototype.draw = function () {
     ctx.beginPath();
     ctx.arc(p.x, p.y, 2.6, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  // scale bar (feet/miles) — bottom-left, sized to a round number
+  {
+    const FT = 3.28084;
+    const candidates = [10, 20, 50, 100, 200, 500, 1000, 2640, 5280, 10560, 26400, 52800];
+    const pxPerFt = s / FT;
+    let ft = candidates[0];
+    for (const c of candidates) if (c * pxPerFt <= 150) ft = c;
+    const px = ft * pxPerFt;
+    if (px >= 25) {
+      const label = ft >= 2640 ? (ft / 5280) + ' mi' : ft + ' ft';
+      const y = h - 12;
+      ctx.strokeStyle = onImg ? 'rgba(255,255,255,0.9)' : 'rgba(60,54,44,0.75)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(10, y); ctx.lineTo(10 + px, y);
+      ctx.moveTo(10, y - 4); ctx.lineTo(10, y + 4);
+      ctx.moveTo(10 + px, y - 4); ctx.lineTo(10 + px, y + 4);
+      ctx.stroke();
+      ctx.font = '10px JetBrains Mono, monospace';
+      halo(label, 14, y - 5);
+      ctx.fillStyle = onImg ? 'rgba(20,24,15,0.95)' : 'rgba(60,54,44,0.9)';
+      ctx.fillText(label, 14, y - 5);
+    }
+  }
+  if (!onImg && L.bounds.length) {
+    ctx.fillStyle = 'rgba(110,101,87,0.55)';
+    ctx.font = '9px JetBrains Mono, monospace';
+    const t = 'grounds © OpenStreetMap';
+    ctx.fillText(t, w - ctx.measureText(t).width - 6, h - 5);
   }
 
   // highlight ring

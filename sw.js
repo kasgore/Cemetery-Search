@@ -38,6 +38,20 @@ self.addEventListener('fetch', e => {
 
   // never intercept the server API
   if (url.pathname.includes('/api/')) return;
+  // aerial tiles are immutable: cache-first with NO revalidation — a tile
+  // already on the device never costs bandwidth again, and the offline
+  // field pack pre-loads whole cemeteries this way over home Wi-Fi
+  if (url.origin === location.origin && url.pathname.includes('/tiles/')) {
+    e.respondWith(
+      caches.open(CACHE).then(cache =>
+        cache.match(e.request).then(hit => hit || fetch(e.request).then(res => {
+          if (res.ok) cache.put(e.request, res.clone());
+          return res;
+        }))
+      )
+    );
+    return;
+  }
   // same-origin: stale-while-revalidate (serve cache instantly, refresh in background)
   if (url.origin === location.origin) {
     e.respondWith(

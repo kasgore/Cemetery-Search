@@ -174,7 +174,7 @@ function gpsChip() {
   if (geo.watchId == null) { el.textContent = 'GPS off'; el.className = ''; }
   else if (geo.err) { el.textContent = 'GPS error'; el.className = 'err'; }
   else if (!geo.pos) { el.textContent = 'GPS…'; el.className = ''; }
-  else { el.textContent = 'GPS ±' + Math.round(geo.pos.acc) + 'm'; el.className = 'on'; }
+  else { el.textContent = 'GPS ' + fmtAcc(geo.pos.acc); el.className = 'on'; }
 }
 
 /* ---------------- compass ---------------- */
@@ -299,7 +299,15 @@ const normFilter = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' '
 // one vocabulary for confidence levels, everywhere in the app
 const LEVEL_LABEL = { gps: 'GPS pin', lot: 'lot position', adjacent: 'near lot', block: 'block area', section: 'section area' };
 function levelLabel(l) { return LEVEL_LABEL[l] || l; }
-function fmtDist(m) { return m >= 950 ? (m / 1000).toFixed(1) + ' km' : Math.round(m) + ' m'; }
+/* US units — cemetery work is feet-and-miles territory */
+const M_TO_FT = 3.28084;
+function fmtDist(m) {
+  const ft = m * M_TO_FT;
+  if (ft < 1000) return Math.round(ft) + ' ft';
+  const mi = m / 1609.344;
+  return (mi >= 10 ? Math.round(mi) : mi.toFixed(mi < 2 ? 2 : 1)) + ' mi';
+}
+function fmtAcc(m) { return '±' + Math.round(m * M_TO_FT) + ' ft'; }
 
 function locChip(req, model) {
   if (!req.loc) {
@@ -315,7 +323,7 @@ function locChip(req, model) {
   const q = l.level === 'gps' || l.level === 'lot' ? 'q-lot' : (l.level === 'adjacent' || l.level === 'block') ? 'q-block' : 'q-section';
   const pins = l.pins ? ` · ${l.pins} pin${l.pins > 1 ? 's' : ''}` : '';
   const disputed = l.disputed ? ' · pins disagree — check both spots' : '';
-  return `<span class="loc-chip"><span class="dot ${q}"></span>${levelLabel(l.level)} ±${Math.round(l.acc)} m${pins}${disputed}</span>`;
+  return `<span class="loc-chip"><span class="dot ${q}"></span>${levelLabel(l.level)} ${fmtAcc(l.acc)}${pins}${disputed}</span>`;
 }
 function plotLine(req) {
   const bits = [];
@@ -441,7 +449,7 @@ function renderFinished() {
       <div class="tname">${esc(r.name)}<span class="years">${CS.yearsOf(r)}</span></div>
       <div class="tmeta"><span class="lbl">${esc(model.cem.name)}</span> ${stLabel[p.st]}${p.ts ? ' · ' + new Date(p.ts).toLocaleDateString() : ''}</div>
       ${p.note ? `<div class="reqnote">${esc(p.note)}</div>` : ''}
-      ${p.gps ? `<div class="tmeta">📍 ${p.gps.lat}, ${p.gps.lng} (±${p.gps.acc} m) <button class="mini act-copy">Copy GPS</button></div>` : ''}
+      ${p.gps ? `<div class="tmeta">📍 ${p.gps.lat}, ${p.gps.lng} (${fmtAcc(p.gps.acc)}) <button class="mini act-copy">Copy GPS</button></div>` : ''}
       <div class="trow-actions">
         <a class="mini" style="text-decoration:none;" href="https://www.findagrave.com/memorial/${r.mid}" target="_blank" rel="noopener">Open on Find a Grave ↗</a>
         <button class="mini act-reopen">↩ Reopen</button>
@@ -560,7 +568,7 @@ function requestCard(req, model) {
     <div class="tmeta">${plotLine(req) || '<span class="lbl">plot</span>—'}</div>
     <div>${locChip(req, model)}${eraHint ? ` <span class="mono small">· ${req.dy}-era burials cluster in ${esc(eraHint.section)}</span>` : ''}${distTxt ? ` <span class="mono small">· ${distTxt}</span>` : ''}${prog.note ? ' <span title="has field note">📝</span>' : ''}</div>
     ${req.problem ? `<div class="reqnote" style="border-left-color:var(--rust);">⚠ previously reported: “${esc(req.problem)}”</div>` : ''}
-    ${prog.gps ? `<div class="tmeta">📍 saved ${prog.gps.lat}, ${prog.gps.lng} (±${prog.gps.acc} m)</div>` : ''}
+    ${prog.gps ? `<div class="tmeta">📍 saved ${prog.gps.lat}, ${prog.gps.lng} (${fmtAcc(prog.gps.acc)})</div>` : ''}
     ${req.notes ? `<div class="reqnote">“${esc(String(req.notes).replace(/<br\s*\/?>/gi, ' '))}” <span class="small">— requester${req.req ? ', ' + esc(req.req) : ''}</span></div>` : ''}
     <div class="trow-actions">
       <button class="mini act-guide">➤ Guide</button>
@@ -633,7 +641,7 @@ function familyHtml(req, model) {
         ${f.isFamily ? '<span title="linked as spouse/child on Find a Grave">👪</span>' : ''}
         ${f.hasPhoto ? '<span class="cam">📷</span>' : '<span class="cam" style="opacity:0.25;">·</span>'}
         <a href="https://www.findagrave.com/memorial/${f.mid}" target="_blank" rel="noopener">${esc(f.name)}</a>
-        <span class="g">${esc(f.years)}${f.plot ? ' · ' + esc(f.plot) : ''}${f.loc ? ' · ' + levelLabel(f.loc.level) + ' ±' + Math.round(f.loc.acc) + ' m' : ''}</span>
+        <span class="g">${esc(f.years)}${f.plot ? ' · ' + esc(f.plot) : ''}${f.loc ? ' · ' + levelLabel(f.loc.level) + ' ' + fmtAcc(f.loc.acc) : ''}</span>
         ${lead}
       </div>`;
     }
@@ -709,7 +717,7 @@ function openGuide(target, model) {
     // don't repeat an identical plot twice when both sources agree
     if (regTxt && !plotBits.some(b => normFilter(b) === normFilter(regTxt))) plotBits.push('Register: ' + regTxt);
   }
-  if (target.loc) plotBits.push('±' + Math.round(target.loc.acc) + ' m (' + levelLabel(target.loc.level) + ')');
+  if (target.loc) plotBits.push(fmtAcc(target.loc.acc) + ' (' + levelLabel(target.loc.level) + ')');
   const savedGps = target.pk && progressOf(target.pk).gps;
   if (savedGps) plotBits.push('📍 saved ' + savedGps.lat + ', ' + savedGps.lng);
   $('guide-plot').textContent = plotBits.join('  ·  ') || 'no location information';
@@ -778,7 +786,7 @@ $('guide-savegps').addEventListener('click', () => {
   // whole lot/block sharpens for everyone still to be found there
   if (guideModel && guideModel.cem) models.delete(String(guideModel.cem.id));
   if (navigator.clipboard) navigator.clipboard.writeText(gps.lat + ', ' + gps.lng).catch(() => {});
-  toast(`Saved & copied ${gps.lat}, ${gps.lng} (±${gps.acc} m) — this pin also sharpens the map for its whole lot`, 4200);
+  toast(`Saved & copied ${gps.lat}, ${gps.lng} (${fmtAcc(gps.acc)}) — this pin also sharpens the map for its whole lot`, 4200);
 });
 $('guide-note').addEventListener('input', () => {
   if (guideTarget && guideTarget.pk) setProgress(guideTarget.pk, { note: $('guide-note').value });
@@ -794,12 +802,13 @@ function drawArrow() {
   let bearing = null;
   if (t && t.loc && geo.pos) {
     const d = CS.distM(geo.pos.lat, geo.pos.lng, t.loc.lat, t.loc.lng);
-    distTxt = d >= 1000 ? (d / 1000).toFixed(2) + '<span class="unit"> km</span>' : Math.round(d) + '<span class="unit"> m</span>';
+    const ft = d * M_TO_FT;
+    distTxt = ft >= 1000 ? (d / 1609.344).toFixed(2) + '<span class="unit"> mi</span>' : Math.round(ft) + '<span class="unit"> ft</span>';
     bearing = CS.bearingDeg(geo.pos.lat, geo.pos.lng, t.loc.lat, t.loc.lng);
     const head = compass.best();
-    if (head) sub = `bearing ${Math.round(bearing)}° · heading ${Math.round(head.h)}° (${head.src}) · GPS ±${Math.round(geo.pos.acc)} m`;
-    else sub = `bearing ${Math.round(bearing)}° ${compassPoint(bearing)} · face north & follow · GPS ±${Math.round(geo.pos.acc)} m`;
-    if (d <= Math.max(8, t.loc.acc)) sub = `you're within the search circle (±${Math.round(t.loc.acc)} m) — read the stones · ` + sub;
+    if (head) sub = `bearing ${Math.round(bearing)}° · heading ${Math.round(head.h)}° (${head.src}) · GPS ${fmtAcc(geo.pos.acc)}`;
+    else sub = `bearing ${Math.round(bearing)}° ${compassPoint(bearing)} · face north & follow · GPS ${fmtAcc(geo.pos.acc)}`;
+    if (d <= Math.max(8, t.loc.acc)) sub = `you're within the search circle (${fmtAcc(t.loc.acc)}) — read the stones · ` + sub;
   } else if (!geo.pos) {
     if (geo.err && geo.err.code === 1) sub = 'location permission denied — allow it for this site in your browser settings';
     else if (typeof isSecureContext !== 'undefined' && !isSecureContext) sub = 'GPS needs the https:// address — open it and accept the certificate warning once';
@@ -906,18 +915,26 @@ function modelLayerCache(model) {
   const sections = Object.entries(model.sections)
     .filter(([label]) => label !== '*')
     .map(([label, s]) => ({ lat: s.lat, lng: s.lng, label }));
-  model._layerCache = { lots, blocks, roads, sections, graves };
+  // cemetery grounds from OSM: boundary polygons, internal drives, gates
+  const g = model.cem && model.cem.data.grounds;
+  const bounds = (g && g.bounds || []).map(pts => ({ pts }));
+  const drives = (g && g.drives || []).map(pts => ({ pts }));
+  const gates = (g && g.gates || []).map(([lat, lng]) => ({ lat, lng }));
+  model._layerCache = { lots, blocks, roads, sections, graves, bounds, drives, gates };
   return model._layerCache;
 }
 
 function buildLayers(cemIds, soloTarget) {
-  const L = { lots: [], blocks: [], roads: [], sections: [], cems: [], targets: [], graves: [] };
+  const L = { lots: [], blocks: [], roads: [], sections: [], cems: [], targets: [], graves: [], bounds: [], drives: [], gates: [] };
   for (const cid of cemIds) {
     const model = getModel(cid);
     if (!model) continue;
     const cache = modelLayerCache(model);
     L.lots.push(...cache.lots);
     L.graves.push(...cache.graves);
+    L.bounds.push(...cache.bounds);
+    L.drives.push(...cache.drives);
+    L.gates.push(...cache.gates);
     L.blocks.push(...cache.blocks);
     L.roads.push(...cache.roads);
     L.sections.push(...cache.sections);
@@ -1069,7 +1086,7 @@ function renderSearch() {
         ${kind === 'mem' && item.hasRequest ? '<span class="badge rust">photo requested</span>' : ''}
       </div>
       <div class="tmeta"><span class="lbl">${esc(model.cem.name)}</span> ${esc(plotStr || 'no plot recorded')}${kind === 'ros' ? ' · <span class="lbl">city register</span>' : ''}</div>
-      <div>${loc ? `<span class="loc-chip"><span class="dot ${loc.level === 'lot' || loc.level === 'gps' ? 'q-lot' : loc.level === 'section' ? 'q-section' : 'q-block'}"></span>${loc.level} ±${Math.round(loc.acc)} m</span>` : ''}</div>
+      <div>${loc ? `<span class="loc-chip"><span class="dot ${loc.level === 'lot' || loc.level === 'gps' ? 'q-lot' : loc.level === 'section' ? 'q-section' : 'q-block'}"></span>${loc.level} ${fmtAcc(loc.acc)}</span>` : ''}</div>
       <div class="trow-actions">
         ${loc ? '<button class="mini act-guide">➤ Guide</button><button class="mini act-map">Map</button>' : ''}
         ${kind === 'mem' ? `<a class="mini" style="text-decoration:none;" href="https://www.findagrave.com/memorial/${item.mid}" target="_blank" rel="noopener">Find a Grave ↗</a>` : ''}
@@ -1394,6 +1411,73 @@ $('btn-revert').addEventListener('click', () => {
   saveUpdates();
   rebuild();
   toast('Reverted to served dataset');
+});
+
+/* ---------------- offline field pack (aerial tiles over Wi-Fi) ---------------- */
+// Mirrors the server's prefetch zooms; fetching each ./tiles/ URL routes
+// through the service worker's cache-first tile handler, which stores it —
+// after that the tile serves forever with zero signal.
+const PACK_ZOOMS = [15, 16, 17, 18, 19];
+function tileXY(z, lat, lng) {
+  const n = Math.pow(2, z), r = lat * Math.PI / 180;
+  return {
+    x: Math.floor((lng + 180) / 360 * n),
+    y: Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n),
+  };
+}
+function packTilesFor(cemIds) {
+  const urls = [];
+  for (const cid of cemIds) {
+    const model = getModel(cid);
+    if (!model) continue;
+    const cc = model.cem.data.meta.cem;
+    // cover the whole grounds: centroid plus every mapped point, padded 120 m
+    let minLat = cc.lat, maxLat = cc.lat, minLng = cc.lng, maxLng = cc.lng;
+    const cache = modelLayerCache(model);
+    for (const arr of [cache.graves, cache.lots]) {
+      for (const p of arr) {
+        if (p.lat < minLat) minLat = p.lat; if (p.lat > maxLat) maxLat = p.lat;
+        if (p.lng < minLng) minLng = p.lng; if (p.lng > maxLng) maxLng = p.lng;
+      }
+    }
+    const padLat = 120 / 111194, padLng = padLat / Math.cos(cc.lat * Math.PI / 180);
+    minLat -= padLat; maxLat += padLat; minLng -= padLng; maxLng += padLng;
+    for (const z of PACK_ZOOMS) {
+      const a = tileXY(z, maxLat, minLng), b = tileXY(z, minLat, maxLng);
+      for (let x = a.x; x <= b.x; x++)
+        for (let y = a.y; y <= b.y; y++)
+          urls.push(`./tiles/${z}/${x}/${y}.jpg`);
+    }
+  }
+  return [...new Set(urls)];
+}
+let packRunning = false;
+async function downloadPack(cemIds, label) {
+  if (packRunning) { toast('A download is already running'); return; }
+  packRunning = true;
+  const st = $('pack-status');
+  const urls = packTilesFor(cemIds);
+  let done = 0, failed = 0;
+  const workers = Array.from({ length: 6 }, async () => {
+    while (urls.length) {
+      const u = urls.pop();
+      try { const r = await fetch(u); if (!r.ok) failed++; } catch (e) { failed++; }
+      done++;
+      if (done % 25 === 0 || !urls.length) st.textContent = `${label}: ${done} tiles cached${failed ? `, ${failed} unavailable` : ''}…`;
+    }
+  });
+  await Promise.all(workers);
+  st.textContent = `${label}: done — ${done - failed} tiles stored on this device${failed ? ` (${failed} unavailable)` : ''}. The map now works with no signal here.`;
+  packRunning = false;
+}
+$('btn-pack-active').addEventListener('click', () => {
+  const a = activeCem();
+  if (a === 'all') { toast('Pick a cemetery first (the selector at the top), or use Download all'); return; }
+  downloadPack([a], getModel(a) ? getModel(a).cem.name : 'cemetery');
+});
+$('btn-pack-all').addEventListener('click', () => {
+  if (!confirm('Download aerial imagery for all 38 cemeteries? Roughly 40–80 MB — do this on Wi-Fi.')) return;
+  downloadPack(DS.cemeteries.map(c => String(c.id)), 'all cemeteries');
 });
 
 /* ---------------- walk controls ---------------- */

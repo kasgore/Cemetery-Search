@@ -246,6 +246,7 @@ CS.normalizeDataset = function (raw) {
           maps: c.maps || [],
           sgBlocks: c.sgBlocks || [],
           rosterAsOf: c.rosterAsOf || null,
+          grounds: c.grounds || null,
           requests: c.requests || [],
           memorials: c.memorials || [],
           roster: c.roster || [],

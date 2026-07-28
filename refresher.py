@@ -588,6 +588,13 @@ def pull_tiles(cfg, registry):
 # ---------------------------------------------------------------- build
 
 def build_output(cfg, registry):
+    # cemetery grounds from OpenStreetMap (boundaries/drives/gates),
+    # baked by tools/pull-osm-grounds.js — optional, static
+    osm_grounds = {}
+    osm_path = os.path.join(BASE_DIR, "geometry", "osm-grounds.json")
+    if os.path.exists(osm_path):
+        with open(osm_path, encoding="utf-8") as f:
+            osm_grounds = json.load(f)
     cemeteries = []
     for cem in registry["cemeteries"]:
         cid = str(cem["id"])
@@ -606,6 +613,8 @@ def build_output(cfg, registry):
             "requests": requests,
             "memorials": memorials,
         }
+        if cid in osm_grounds:
+            entry["grounds"] = osm_grounds[cid]
         geom_file = cfg["geometry"].get(cid)
         if geom_file:
             with open(os.path.join(BASE_DIR, geom_file), encoding="utf-8") as f:

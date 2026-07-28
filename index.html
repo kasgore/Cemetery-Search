@@ -331,9 +331,11 @@
       <span><span class="dot" style="background:#2b5c7a;"></span>you</span>
       <span><span class="dot" style="background:#b9b09c;"></span>lot grid</span>
       <span><span class="dot" style="background:#4a5d3a;"></span>GPS grave (solid = photographed stone)</span>
+      <span><span class="dot" style="border:1.5px dashed #5a6946; background:transparent; border-radius:0;"></span>cemetery boundary</span>
+      <span><span class="dot" style="background:#ece5d4; border:1.5px solid #948a76; border-radius:3px; width:14px;"></span>drive/path</span>
       <span><span class="dot" style="border:1.5px dashed #8b3a1f; background:transparent;"></span>search circle</span>
     </div>
-    <div class="small" style="padding:4px 2px;">Tap a marker for details; &#x26F6; switches between this cemetery and the whole region. The aerial layer is USGS NAIP photography (🛰 toggles it). Dot positions come from plat maps (Oak Grove) and GPS-tagged memorials — the accuracy for each grave is shown on its card.</div>
+    <div class="small" style="padding:4px 2px;">Tap any marker or grave dot for details; &#x26F6; switches between this cemetery and the whole region. The aerial layer is USGS NAIP photography (🛰 toggles it); cemetery boundaries, drives, and gates are from OpenStreetMap. Dot positions come from georeferenced plat maps, burial registers, and GPS-tagged memorials — the accuracy for each grave is shown on its card. <strong>Going somewhere with weak signal?</strong> Data → Offline field pack downloads the imagery ahead of time.</div>
   </section>
 
   <!-- SEARCH -->
@@ -358,6 +360,15 @@
         <button class="secondary" id="btn-reset">Reset progress</button>
         <button class="secondary" id="btn-revert">Revert to baked dataset</button>
       </div>
+    </div>
+    <div class="card">
+      <h2>Offline field pack</h2>
+      <p class="small">Cemeteries often have weak or no cell signal. Download the aerial imagery <strong>before you go, on Wi-Fi</strong> — everything else (all burials, registers, maps) is already stored offline the first time the app loads.</p>
+      <div class="button-row">
+        <button class="secondary" id="btn-pack-active">Download active cemetery</button>
+        <button class="secondary" id="btn-pack-all">Download all 38</button>
+      </div>
+      <div id="pack-status" class="mono small" style="margin-top:6px;"></div>
     </div>
 
     <div class="card">
@@ -418,12 +429,12 @@
       <h2>How this app finds graves</h2>
       <p>When a request has any plot or GPS evidence, it's located by the best of it — the colored chip on each card names the level and an honest accuracy radius:</p>
       <ol>
-        <li><span class="badge">GPS PIN</span> the grave's own pin, or its memorial's (±8 m);</li>
+        <li><span class="badge">GPS PIN</span> the grave's own pin, or its memorial's (±25 ft);</li>
         <li><span class="badge">LOT</span> the exact lot — at Oak Grove from the <strong>city plat maps</strong> (georeferenced with 580+ GPS-tagged stones); everywhere else from GPS-tagged memorials in the same lot. Multiple agreeing pins beat one lone pin, so the chip shows the pin count;</li>
-        <li><span class="badge gold">NEAR LOT / BLOCK</span> pins in adjacent lots or the block/row area (±14–45 m);</li>
+        <li><span class="badge gold">NEAR LOT / BLOCK</span> pins in adjacent lots or the block/row area (±45–150 ft);</li>
         <li><span class="badge rust">SECTION</span> the section area only — the radius shown is that section's real measured extent.</li>
       </ol>
-      <p><strong>Most requests (about 3 in 4) have no plot on record anywhere.</strong> For those the app gives you what an experienced hunter uses instead: the <em>city burial register</em> when one exists (Oak Grove and Riverside — matched by name and dates; a "verify" badge means check it's the same person), and <em>family leads</em> under the Neighbors button — same-surname burials with known spots, because spouses usually share the lot.</p>
+      <p><strong>Most requests (about 3 in 4) have no plot on record anywhere.</strong> For those the app gives you what an experienced hunter uses instead: the <em>burial register</em> when one exists (12 cemeteries have one — matched by name and dates; a "verify" badge means check it's the same person), and <em>family leads</em> under the Neighbors button — same-surname burials with known spots, because spouses usually share the lot.</p>
     </div>
     <div class="card">
       <h2>Field technique</h2>
