@@ -100,14 +100,24 @@ async function syncProgress() {
       const mine = store.progress[pk];
       if (!mine || (v.ts || 0) > (mine.ts || 0)) { store.progress[pk] = v; adopted++; }
     }
-    if (adopted) { save(); updateStats(); }
-    const n = Object.values(store.progress).filter(p => p.st || p.note || p.gps).length;
-    if (el) el.textContent = `☁ field log backed up to the server — ${n} entr${n === 1 ? 'y' : 'ies'} safe`;
+    if (adopted) {
+      // full cross-device sync: changes made on the other device show up in
+      // whatever view is open, not just after a reload
+      save(); updateStats();
+      const active = document.querySelector('.panel.active');
+      if (active && active.id === 'panel-walk') renderWalk();
+      if (active && active.id === 'panel-queue') renderQueue();
+      if (guideTarget && guideTarget.pk) { syncGuideButtons(); renderGuidePhoto(); }
+    }
+    const n = Object.values(store.progress).filter(p => p.st || p.note || p.gps || p.photo || p.up).length;
+    if (el) el.textContent = `☁ field log synced with the Pi — ${n} entr${n === 1 ? 'y' : 'ies'}`;
   } catch (e) {
     if (el) el.textContent = '';
   }
 }
-setTimeout(syncProgress, 2500);   // boot: pull the server copy and merge
+setTimeout(syncProgress, 2500);        // boot: pull the server copy and merge
+setInterval(syncProgress, 60000);      // steady heartbeat — phone and PC converge within a minute
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { syncProgress(); syncPhotos(); } });
 
 /* field photos: reference copies so a day's shots match their graves.
    Local-first in IndexedDB (works in dead zones), synced to the server
@@ -154,41 +164,56 @@ const photoDB = {
     });
   },
 };
-// downscale to a reference copy (~1600px JPEG) — the FULL-RES original stays
-// in the phone's gallery and is what gets uploaded to Find a Grave
-function shrinkPhoto(file) {
+// re-encode at a size cap; used for thumbnails (the FULL-RES original is
+// what queues for the Pi — Find a Grave deserves the real photo)
+function shrinkPhoto(file, maxDim, quality) {
   return new Promise((res, rej) => {
     const img = new Image();
     img.onload = () => {
-      const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+      const k = Math.min(1, (maxDim || 1600) / Math.max(img.width, img.height));
       const cv = document.createElement('canvas');
       cv.width = Math.round(img.width * k); cv.height = Math.round(img.height * k);
       cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
       URL.revokeObjectURL(img.src);
-      cv.toBlob(b => b ? res(b) : rej(new Error('encode failed')), 'image/jpeg', 0.82);
+      cv.toBlob(b => b ? res(b) : rej(new Error('encode failed')), 'image/jpeg', quality || 0.82);
     };
     img.onerror = () => rej(new Error('not an image'));
     img.src = URL.createObjectURL(file);
   });
 }
+// sync loop built for intermittent cell service: full-res photos wait in
+// IndexedDB across restarts, a retry timer + the 'online' event keep nudging,
+// and after a confirmed upload the phone keeps only the thumbnail
 let photoSyncBusy = false;
 async function syncPhotos() {
   if (photoSyncBusy) return;
   photoSyncBusy = true;
+  let pending = 0;
   try {
     for (const pk of await photoDB.keys()) {
       const rec = await photoDB.get(pk);
       if (!rec || rec.synced) continue;
-      const res = await fetch('./api/photo/' + encodeURIComponent(pk), {
-        method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: rec.blob,
-      });
-      if (res.ok) await photoDB.put(pk, { ...rec, synced: true });
-      if (guideTarget && guideTarget.pk === pk) renderGuidePhoto();
+      try {
+        const res = await fetch('./api/photo/' + encodeURIComponent(pk), {
+          method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: rec.blob,
+        });
+        if (!res.ok) { pending++; continue; }
+        if (rec.thumb) {
+          await fetch('./api/photo/' + encodeURIComponent(pk) + '?thumb=1', {
+            method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: rec.thumb,
+          }).catch(() => {});
+        }
+        // uploaded — drop the big blob, keep the thumb for instant display
+        await photoDB.put(pk, { thumb: rec.thumb || null, ts: rec.ts, synced: true });
+        if (guideTarget && guideTarget.pk === pk) renderGuidePhoto();
+      } catch (e) { pending++; }
     }
-  } catch (e) { /* unreachable server — retry on next change/boot */ }
+  } catch (e) { /* IndexedDB unavailable — nothing to do */ }
   photoSyncBusy = false;
+  if (pending) setTimeout(syncPhotos, 60000);   // keep nudging till it's all up
 }
 setTimeout(syncPhotos, 3500);
+window.addEventListener('online', () => setTimeout(syncPhotos, 1500));
 
 const models = new Map();
 function getModel(cemId) {
@@ -377,6 +402,7 @@ function switchTab(name) {
   if (name === 'walk') renderWalk();
   if (name === 'map') { ensureMap(); mainMap.resize(); refreshMapLayers(); fitMap(); }
   if (name === 'search') ensureAllModels(); // pay the build cost on tab open, not first keystroke
+  if (name === 'queue') renderQueue();
   if (name === 'data') renderDataInfo();
 }
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
@@ -611,6 +637,100 @@ function renderFinished() {
       toast(r.name + ' reopened');
     });
     wrap.appendChild(card);
+  }
+}
+
+/* ---------------- photo upload queue tab ---------------- */
+function personByPk(pk) {
+  if (pk.startsWith('ros:')) {
+    const key = pk.slice(4);
+    for (const c of DS.cemeteries) {
+      const m = getModel(c.id);
+      const r = m && m.roster.find(x => String(x.key) === key);
+      if (r) return {
+        name: r.name, years: CS.yearsOf(r), model: m, mid: r.mem ? r.mem.mid : null,
+        plot: [r.section !== '*' && r.section, r.block && 'Blk ' + r.block, r.lot && 'Lot ' + r.lot, r.grave && 'Gr ' + r.grave].filter(Boolean).join(' '),
+      };
+    }
+  } else {
+    for (const c of DS.cemeteries) {
+      const m = getModel(c.id);
+      const mem = m && m.memById.get(+pk);
+      if (mem) return { name: mem.name, years: CS.yearsOf(mem), model: m, mid: mem.mid, plot: mem.plot };
+    }
+  }
+  return null;
+}
+let queueInit = false;
+async function renderQueue() {
+  ensureAllModels();
+  const list = $('queue-list'), summary = $('queue-summary');
+  if (!queueInit) {
+    queueInit = true;
+    const d = new Date(); const to = d.toISOString().slice(0, 10);
+    d.setDate(d.getDate() - 30); const from = d.toISOString().slice(0, 10);
+    $('queue-from').value = from; $('queue-to').value = to;
+    for (const id of ['queue-from', 'queue-to', 'queue-hideup'])
+      $(id).addEventListener('change', renderQueue);
+  }
+  // photos on the Pi + photos still waiting on this phone
+  const items = new Map();
+  try {
+    for (const p of ((await (await fetch('./api/photos')).json()).photos || []))
+      items.set(p.pk, { pk: p.pk, ts: p.ts, size: p.size, synced: true });
+  } catch (e) { /* offline — local-only view */ }
+  try {
+    for (const pk of await photoDB.keys()) {
+      const rec = await photoDB.get(pk);
+      if (rec && !rec.synced) items.set(pk, { pk, ts: rec.ts, size: rec.blob ? rec.blob.size : 0, synced: false, rec });
+    }
+  } catch (e) { }
+  const from = new Date($('queue-from').value + 'T00:00:00').getTime() || 0;
+  const to = (new Date($('queue-to').value + 'T00:00:00').getTime() || 8.64e15) + 86400000;
+  const hideUp = $('queue-hideup').checked;
+  const rows = [...items.values()]
+    .filter(x => x.ts >= from && x.ts < to)
+    .filter(x => !hideUp || !progressOf(x.pk).up)
+    .sort((a, b) => b.ts - a.ts);
+  const totalMB = rows.reduce((s, x) => s + (x.size || 0), 0) / 1048576;
+  const nUp = [...items.values()].filter(x => progressOf(x.pk).up).length;
+  summary.textContent = `${rows.length} photo${rows.length === 1 ? '' : 's'} in range (${totalMB.toFixed(1)} MB) · ${nUp} marked uploaded overall`;
+  list.innerHTML = '';
+  if (!rows.length) {
+    list.innerHTML = '<div class="empty-state"><div class="ornament">❧</div>No photos in this date range — field photos you attach on the guide land here.</div>';
+    return;
+  }
+  for (const x of rows) {
+    const who = personByPk(x.pk);
+    const p = progressOf(x.pk);
+    const name = who ? who.name : 'Unknown (' + x.pk + ')';
+    const fname = (name.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'grave') + '_' + x.pk.replace(':', '-') + '.jpg';
+    const card = document.createElement('div');
+    card.className = 'tcard' + (p.up ? ' st-done' : '');
+    const thumbSrc = x.synced
+      ? './api/photo/' + encodeURIComponent(x.pk) + '?thumb=1&t=' + x.ts
+      : (x.rec && (x.rec.thumb || x.rec.blob) ? URL.createObjectURL(x.rec.thumb || x.rec.blob) : '');
+    card.innerHTML = `
+      <div style="display:flex; gap:10px; align-items:flex-start;">
+        <img src="${thumbSrc}" style="width:92px; border-radius:4px; border:1px solid var(--line); flex:none;" alt="stone photo" loading="lazy">
+        <div style="min-width:0;">
+          <div class="tname">${esc(name)}<span class="years">${who ? esc(who.years) : ''}</span>
+            ${p.up ? '<span class="badge stone">⬆ uploaded</span>' : '<span class="badge rust">⏳ to upload</span>'}
+            ${x.synced ? '' : '<span class="badge">⌛ syncing from phone</span>'}
+          </div>
+          <div class="tmeta">${who ? `<span class="lbl">${esc(who.model.cem.name)}</span> ` : ''}${who && who.plot ? esc(who.plot) + ' · ' : ''}${new Date(x.ts).toLocaleDateString()}${x.size ? ' · ' + (x.size / 1048576).toFixed(1) + ' MB' : ''}</div>
+          <div class="trow-actions" style="margin-top:5px;">
+            ${x.synced ? `<a class="mini" style="text-decoration:none;" href="./api/photo/${encodeURIComponent(x.pk)}" download="${fname}">⬇ Download full-res</a>` : ''}
+            ${who && who.mid ? `<a class="mini" style="text-decoration:none;" href="https://www.findagrave.com/memorial/${who.mid}" target="_blank" rel="noopener">Find a Grave ↗</a>` : ''}
+            <button class="mini act-qup">${p.up ? '↩ not uploaded' : '⬆ Mark uploaded'}</button>
+          </div>
+        </div>
+      </div>`;
+    card.querySelector('.act-qup').addEventListener('click', () => {
+      setProgress(x.pk, { up: p.up ? 0 : Date.now(), st: progressOf(x.pk).st || 'done' });
+      renderQueue();
+    });
+    list.appendChild(card);
   }
 }
 
@@ -954,20 +1074,18 @@ async function renderGuidePhoto() {
   const row = $('guide-photo-row'), img = $('guide-photo-thumb'), state = $('guide-photo-state');
   if (!guideTarget || !guideTarget.pk) { row.style.display = 'none'; return; }
   const rec = await photoDB.get(guideTarget.pk).catch(() => null);
-  if (rec) {
-    img.src = URL.createObjectURL(rec.blob);
-    state.textContent = rec.synced ? '☁ on the server' : '⌛ will sync to the server';
+  if (rec && (rec.thumb || rec.blob)) {
+    img.src = URL.createObjectURL(rec.thumb || rec.blob);
+    state.textContent = rec.synced ? '☁ on the Pi — in your upload queue'
+      : `⌛ queued (${rec.blob ? (rec.blob.size / 1048576).toFixed(1) + ' MB' : ''}) — syncs when there's signal`;
     row.style.display = 'flex';
-  } else {
-    // maybe it lives only on the server (taken on another device)
-    const url = './api/photo/' + encodeURIComponent(guideTarget.pk);
-    const res = await fetch(url, { method: 'GET' }).catch(() => null);
-    if (res && res.ok) {
-      img.src = url + '?t=' + Date.now();
-      state.textContent = '☁ from the server';
-      row.style.display = 'flex';
-    } else row.style.display = 'none';
-  }
+  } else if (progressOf(guideTarget.pk).photo) {
+    // taken on another device — the Pi has it
+    img.src = './api/photo/' + encodeURIComponent(guideTarget.pk) + '?thumb=1&t=' + Date.now();
+    img.onerror = () => { row.style.display = 'none'; };
+    state.textContent = '☁ on the Pi';
+    row.style.display = 'flex';
+  } else row.style.display = 'none';
 }
 $('guide-photo').addEventListener('click', () => $('guide-photo-input').click());
 $('guide-photo-input').addEventListener('change', async () => {
@@ -975,11 +1093,14 @@ $('guide-photo-input').addEventListener('change', async () => {
   $('guide-photo-input').value = '';
   if (!f || !guideTarget || !guideTarget.pk) return;
   try {
-    const blob = await shrinkPhoto(f);
-    await photoDB.put(guideTarget.pk, { blob, ts: Date.now(), synced: false });
+    // full resolution queues for the Pi; a small thumb renders lists fast.
+    // iOS/Android hand file inputs a JPEG; anything else gets re-encoded.
+    const blob = /jpe?g$/i.test(f.type) || f.type === '' ? f : await shrinkPhoto(f, 99999, 0.95);
+    const thumb = await shrinkPhoto(f, 480, 0.75);
+    await photoDB.put(guideTarget.pk, { blob, thumb, ts: Date.now(), synced: false });
     setProgress(guideTarget.pk, { photo: 1 });   // flag rides along in progress sync
     renderGuidePhoto();
-    toast('Photo attached — reference copy; upload the full-res original from your gallery to Find a Grave');
+    toast(`Full-quality photo queued (${(blob.size / 1048576).toFixed(1)} MB) — it syncs to the Pi and appears in the Queue tab`);
     syncPhotos();
   } catch (e) { toast('Could not read that photo'); }
 });

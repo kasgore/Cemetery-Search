@@ -124,25 +124,38 @@ def post_progress():
 # Field photos: reference copies of stone photos, keyed by the same pk as
 # progress ("<memorialId>" or "ros:<key>"). Stored in the data volume, so
 # they survive image rebuilds like everything else.
-def _photo_path(pk):
+def _photo_path(pk, thumb=False):
     if not re.fullmatch(r"\d+|ros:\w+", pk):   # the only pk shapes the app makes
         return None
     d = os.path.join(DATA_DIR, "photos")
     os.makedirs(d, exist_ok=True)
-    return os.path.join(d, pk.replace(":", "_") + ".jpg")
+    return os.path.join(d, pk.replace(":", "_") + (".thumb.jpg" if thumb else ".jpg"))
 
 
 @app.get("/api/photos")
 def list_photos():
     d = os.path.join(DATA_DIR, "photos")
-    if not os.path.isdir(d):
-        return jsonify({"photos": []})
-    return jsonify({"photos": [f[:-4].replace("ros_", "ros:", 1) for f in os.listdir(d) if f.endswith(".jpg")]})
+    out = []
+    if os.path.isdir(d):
+        for f in os.listdir(d):
+            if not f.endswith(".jpg") or f.endswith(".thumb.jpg"):
+                continue
+            st = os.stat(os.path.join(d, f))
+            out.append({
+                "pk": f[:-4].replace("ros_", "ros:", 1),
+                "ts": int(st.st_mtime * 1000),
+                "size": st.st_size,
+            })
+    out.sort(key=lambda x: -x["ts"])
+    return jsonify({"photos": out})
 
 
 @app.get("/api/photo/<pk>")
 def get_photo(pk):
-    p = _photo_path(pk)
+    want_thumb = request.args.get("thumb") == "1"
+    p = _photo_path(pk, thumb=want_thumb)
+    if want_thumb and (not p or not os.path.exists(p)):
+        p = _photo_path(pk)   # no thumb stored — fall back to the full image
     if not p or not os.path.exists(p):
         return jsonify({"error": "not found"}), 404
     return send_from_directory(os.path.dirname(p), os.path.basename(p), max_age=0)
@@ -150,11 +163,12 @@ def get_photo(pk):
 
 @app.post("/api/photo/<pk>")
 def put_photo(pk):
-    p = _photo_path(pk)
+    p = _photo_path(pk, thumb=request.args.get("thumb") == "1")
     if not p:
         return jsonify({"error": "bad key"}), 400
+    # full-resolution originals — modern phone JPEGs run 3-12 MB
     data = request.get_data(cache=False)
-    if not data or len(data) > 5 * 1024 * 1024:
+    if not data or len(data) > 25 * 1024 * 1024:
         return jsonify({"error": "empty or too large"}), 400
     if not data.startswith(b"\xff\xd8"):   # JPEG magic — the app only sends JPEG
         return jsonify({"error": "not a jpeg"}), 400

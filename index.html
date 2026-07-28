@@ -292,6 +292,7 @@
   <button class="tab active" data-tab="walk">&#x2693; Walk</button>
   <button class="tab" data-tab="map">&#x25CE; Map</button>
   <button class="tab" data-tab="search">&#x2315; Search</button>
+  <button class="tab" data-tab="queue">&#x2B06; Queue</button>
   <button class="tab" data-tab="data">&#x270E; Data</button>
   <button class="tab" data-tab="help">? Help</button>
 </nav>
@@ -351,6 +352,21 @@
   </section>
 
   <!-- DATA -->
+  <!-- UPLOAD QUEUE -->
+  <section class="panel" id="panel-queue">
+    <div class="card">
+      <h2>Photo upload queue</h2>
+      <p class="small">Every field photo, matched to its grave. On your PC: download the full-res shot, upload it to the memorial on Find a Grave, mark it uploaded. Photos still syncing from the phone show ⌛.</p>
+      <div class="button-row" style="align-items:center; flex-wrap:wrap;">
+        <label class="small">From <input type="date" id="queue-from"></label>
+        <label class="small">To <input type="date" id="queue-to"></label>
+        <label class="small"><input type="checkbox" id="queue-hideup" checked> hide already-uploaded</label>
+      </div>
+      <div id="queue-summary" class="mono small" style="margin:6px 0;"></div>
+    </div>
+    <div id="queue-list"></div>
+  </section>
+
   <section class="panel" id="panel-data">
     <div class="card" id="dataset-card">
       <h2>Loaded Dataset</h2>
