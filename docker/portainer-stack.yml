@@ -1,0 +1,27 @@
+# Cemetery Search — Portainer WEB-EDITOR stack (no build).
+#
+# Pairs with an image already present on the host: build it once via
+# Portainer > Images > Build a new image > Upload, using
+# cemetery-search-image-build.tar.gz (Dockerfile at archive root), image
+# name `cemetery-search:latest`. Then paste THIS file in
+# Stacks > Add stack > Web editor and deploy.
+#
+# (The docker-compose.yml files with `build:` blocks are for hosts that
+# have the repo files — they can never work pasted into the web editor.)
+services:
+  cemetery-search:
+    image: cemetery-search:latest
+    container_name: cemetery-search
+    restart: unless-stopped
+    ports:
+      - "80:8420"     # http
+      - "443:8443"    # https (self-signed)
+    environment:
+      REFRESH_HOURS: "6"          # photo-request refresh cadence
+      RADIUS_MILES: "15"          # auto-include cemeteries with requests within this range
+      CERT_HOSTS: "192.168.5.14,localhost"   # SANs for the self-signed https cert
+    volumes:
+      - cemetery_data:/data       # caches + refreshed dataset survive rebuilds
+
+volumes:
+  cemetery_data:

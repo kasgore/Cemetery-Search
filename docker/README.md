@@ -1,5 +1,22 @@
 # Deploying Cemetery Search with Portainer (Flask + auto-refresh)
 
+## No-GitHub, UI-only deploy (image build + web-editor stack)
+
+The web editor cannot run `build:` blocks (a pasted stack has no repo files
+next to it — the "lstat /data/compose/…/docker" error). Instead:
+
+1. **Images → Build a new image** — name `cemetery-search:latest`, **Upload**
+   tab, select an image-build tarball (Dockerfile at archive root; make one
+   with: `cp docker/Dockerfile Dockerfile && tar -czf build.tar.gz Dockerfile
+   requirements.txt app.py refresher.py index.html cemetery-search.html
+   app-*.js cemetery-data.js xlsx.full.min.js sw.js manifest.webmanifest
+   icons geometry seed`), then Build.
+2. **Stacks → Add stack → Web editor** — paste `docker/portainer-stack.yml`
+   (image-only, no build) and deploy.
+
+Updating later = rebuild the image from a fresh tarball (same name), then
+re-deploy the stack.
+
 One container does everything: serves the app on **port 80 (http) and 443
 (https, self-signed for 192.168.5.14)** — **and refreshes all cemetery data
 automatically** — photo requests every `REFRESH_HOURS` (default 6 h), memorial
