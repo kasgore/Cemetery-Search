@@ -878,6 +878,30 @@ function enrichRequest(model, req) {
     }
     if (!req.pBest) req.pBest = req.pRos || req.pFag || null;
   }
+  // last resort: Find a Grave's own family links. Spouses (and most parents/
+  // children) share the lot — a located family member puts this request on
+  // the map at "family lot" precision instead of nowhere at all.
+  if (!req.loc && req.mem) {
+    famIndexes(model);
+    const names = new Set();
+    for (const f of req.mem.fam) names.add(CS.normName(f));
+    const reqName = CS.normName(req.mem.name);
+    const cands = new Map();
+    for (const fn of names) for (const m of (model._nameIdx.get(fn) || [])) if (m.mid !== req.mid) cands.set(m.mid, m);
+    for (const m of (model._famIdx.get(reqName) || [])) if (m.mid !== req.mid) cands.set(m.mid, m);
+    let best = null;
+    for (const m of cands.values()) {
+      let loc = null;
+      if (m.lat != null) loc = { lat: m.lat, lng: m.lng, acc: 8, level: 'gps' };
+      else if (m.p) loc = CS.locate(model, m.p);
+      if (!loc || (loc.level !== 'gps' && loc.level !== 'lot' && loc.level !== 'adjacent')) continue;
+      if (!best || loc.acc < best.loc.acc) best = { m, loc };
+    }
+    if (best) {
+      req.loc = { lat: best.loc.lat, lng: best.loc.lng, acc: Math.max(10, best.loc.acc + 4), level: 'family', map: null, xy: null, via: best.m.name };
+      if (!req.pBest && best.m.p) req.pBest = best.m.p;
+    }
+  }
 }
 CS.enrichRequest = enrichRequest;
 

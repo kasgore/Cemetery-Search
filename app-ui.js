@@ -442,7 +442,7 @@ function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ 
 const normFilter = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 // one vocabulary for confidence levels, everywhere in the app
-const LEVEL_LABEL = { gps: 'GPS pin', lot: 'lot position', adjacent: 'near lot', block: 'block area', section: 'section area' };
+const LEVEL_LABEL = { gps: 'GPS pin', lot: 'lot position', adjacent: 'near lot', block: 'block area', section: 'section area', family: 'family lot' };
 function levelLabel(l) { return LEVEL_LABEL[l] || l; }
 /* US units — cemetery work is feet-and-miles territory */
 const M_TO_FT = 3.28084;
@@ -468,7 +468,8 @@ function locChip(req, model) {
   const q = l.level === 'gps' || l.level === 'lot' ? 'q-lot' : (l.level === 'adjacent' || l.level === 'block') ? 'q-block' : 'q-section';
   const pins = l.pins ? ` · ${l.pins} pin${l.pins > 1 ? 's' : ''}` : '';
   const disputed = l.disputed ? ' · pins disagree — check both spots' : '';
-  return `<span class="loc-chip"><span class="dot ${q}"></span>${levelLabel(l.level)} ${fmtAcc(l.acc)}${pins}${disputed}</span>`;
+  const via = l.level === 'family' && l.via ? ` (${esc(l.via)}'s grave)` : '';
+  return `<span class="loc-chip"><span class="dot ${q}"></span>${levelLabel(l.level)} ${fmtAcc(l.acc)}${via}${pins}${disputed}</span>`;
 }
 function plotLine(req) {
   const bits = [];
@@ -491,7 +492,7 @@ function sortRequests(items, sort) {
   const blockOf = r => (r.pBest && r.pBest.block) || '';
   if (sort === 'name') items.sort((a, b) => CS.normName(a.ln).localeCompare(CS.normName(b.ln)));
   else if (sort === 'conf') {
-    const rank = { gps: 0, lot: 1, adjacent: 2, block: 3, section: 4 };
+    const rank = { gps: 0, lot: 1, adjacent: 2, block: 3, section: 4, family: 5 };
     items.sort((a, b) => (a.loc ? rank[a.loc.level] : 9) - (b.loc ? rank[b.loc.level] : 9));
   } else if (sort === 'near' && geo.pos) {
     items.sort((a, b) => {
@@ -1013,7 +1014,8 @@ function openGuide(target, model) {
     // don't repeat an identical plot twice when both sources agree
     if (regTxt && !plotBits.some(b => normFilter(b) === normFilter(regTxt))) plotBits.push('Register: ' + regTxt);
   }
-  if (target.loc) plotBits.push(fmtAcc(target.loc.acc) + ' (' + levelLabel(target.loc.level) + ')');
+  if (target.loc) plotBits.push(fmtAcc(target.loc.acc) + ' (' + levelLabel(target.loc.level) +
+    (target.loc.level === 'family' && target.loc.via ? ' — ' + target.loc.via + "'s grave; spouses usually share the lot" : '') + ')');
   const savedGps = target.pk && progressOf(target.pk).gps;
   if (savedGps) plotBits.push('📍 saved ' + savedGps.lat + ', ' + savedGps.lng);
   $('guide-plot').textContent = plotBits.join('  ·  ') || 'no location information';

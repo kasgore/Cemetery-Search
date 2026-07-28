@@ -440,5 +440,22 @@ const badModel = CS.buildModel({
 }, {});
 t('implausible spacing refused', !badModel.maps.some(m => m.dynamic), JSON.stringify(badModel.maps.length));
 
+/* ---------- family-link location promotion ---------- */
+section('family location');
+const famLocModel = CS.buildModel({
+  meta: { cemetery: 'F', fagCemeteryId: 782, cem: { lat: 43.37, lng: -84.66 }, declination: -6.6, asOf: '' },
+  sections: {}, maps: [],
+  requests: [{ prId: 9, mid: 8001, fn: 'Mary', ln: 'Hollow', by: 1902, dy: 1980, plot: '' }],
+  memorials: [
+    [8001, 'Mary Hollow', '', 1902, 1980, '', null, null, 2, 'Frank Hollow'],   // no plot, no pin — but linked to Frank
+    [8002, 'Frank Hollow', '', 1899, 1975, 'Blk C Lot 4', 43.3702, -84.6603, 1, 'Mary Hollow'],
+  ],
+  roster: [],
+}, {});
+const famReq = famLocModel.requests[0];
+t('family link promotes to a location', famReq.loc && famReq.loc.level === 'family', famReq.loc && famReq.loc.level);
+t('family location names the relative', famReq.loc && /Frank/.test(famReq.loc.via || ''), famReq.loc && famReq.loc.via);
+t('family location sits at the relative\'s grave', famReq.loc && Math.abs(famReq.loc.lat - 43.3702) < 1e-6);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
