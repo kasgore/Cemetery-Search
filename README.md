@@ -11,12 +11,13 @@ A field app for fulfilling Find a Grave photo requests at **38 cemeteries around
 
 - **Locates graves by the best available evidence**, per request:
   1. the memorial's own GPS pin;
-  2. **lot positions from georeferenced city plat maps** (Oak Grove: 23 vector PDFs from the city, fitted with RANSAC against 450+ GPS-tagged memorials — 3–8 m typical);
+  2. **lot positions from georeferenced city plat maps** (Oak Grove: 23 vector PDFs from the city, fitted with RANSAC against 450+ GPS-tagged memorials — 3–8 m typical; Riverside/Alma: the city's one-page plat via interment.net, cluster-fingerprint fit — 808 positions across 10 blocks incl. the mausoleum crypt grid and grave-numbered blocks R/T, ~3–15 m);
   3. **GPS-anchor clustering**: any cemetery's GPS-tagged memorials, grouped by parsed plot (same lot → ±6–18 m depending on how many pins agree; adjacent lot, block, section fall-backs with honest radii);
-  4. **municipal burial registers** (BS&A Online: Oak Grove/St. Louis uid 2024, Riverside/Alma uid 1205) supply Section/Block/Lot for requests Find a Grave has no plot for, matched by name+dates with nickname/spelling tolerance;
-  5. **family leads** when nothing else exists: same-surname burials with locatable graves (spouses usually share the lot).
+  4. **burial registers for 12 cemeteries (~28.7k rows)** — BS&A Online (Oak Grove uid 2024, Riverside uid 1205), interment.net (Ithaca city register, 4,968 rows), Gratiot County Cemeteries Online via the migenweb mirror (Pritchard, Riverdale, Elm Hall, French Seville, St. Patricks-Irishtown, Brady, Sibley — 4,236 rows with section-row-position or lot-grave codes), the Chippewa Twp 1941 sexton book (305 rows, era-gated name matching), and the Lee Twp walk-order transcription (585 rows → 98% navigable, the app's best) — matched to memorials by name+dates with nickname/spelling tolerance;
+  5. **register × GPS cross-anchors**: a register row matched to a GPS-photographed memorial anchors its whole row/lot, so register-only cemeteries become navigable; **field-saved GPS fixes** (Guide → Save GPS) feed the same anchor index, so every stone you confirm sharpens the map for its neighbors;
+  6. **family leads** when nothing else exists: same-surname burials with locatable graves (spouses usually share the lot).
 - **Walking list** across all cemeteries (nearest first, drive links) or per cemetery grouped by section, with per-grave status (photographed / no stone / not found), notes, requester hints, and **neighbor packs** (adjacent burials, 📷 = photographed stone to use as a visual anchor).
-- **Guide mode**: declination-corrected compass arrow + live distance + honest accuracy circle; offline canvas map (lot grids, block letters, sections, your blue dot).
+- **Guide mode**: declination-corrected compass arrow + live distance + honest accuracy circle; offline canvas map (lot grids, block letters, sections, GPS-tagged graves with surnames at close zoom — solid dot = photographed stone, your blue dot).
 - **Offline search of ~72,000 burials** — memorials + registers, cross-matched.
 - **PWA**: installs to the home screen, fully offline in the field (HTTPS required for GPS/compass — see docker/README.md).
 
@@ -30,7 +31,7 @@ Everything runs through one webserver — **`python app.py` from this directory*
 | `refresher.py` | discovery, pulls, register scrapes, dataset builds |
 | `index.html`, `app-core.js`, `app-map.js`, `app-ui.js` | the app (core is DOM-free and unit-tested) |
 | `cemetery-data.js` | generated dataset: all cemeteries' requests, memorial indexes, registers, plat geometry |
-| `geometry/oakgrove.json`, `seed/` | static plat geometry (from `tools/`) + register seeds baked into first boot |
+| `geometry/oakgrove.json`, `geometry/riverside.json`, `seed/` | static plat geometry (from `tools/`) + register seeds baked into first boot |
 | `docker/` | Portainer stack (Dockerfile + compose + deploy tarball) |
 | `tools/` | one-time pipeline: plat-PDF extraction, RANSAC georeferencing, test suite |
 | `sw.js`, `manifest.webmanifest`, `icons/` | PWA/offline |

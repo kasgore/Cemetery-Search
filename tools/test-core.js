@@ -360,5 +360,40 @@ const rl = CS.researchLinks({ fn: 'Ezra', ln: 'Whitcomb', dy: 1920 });
 t('research links built', rl.length >= 3 && rl.some(l => l.url.includes('familysearch')) && rl.some(l => l.url.includes('chroniclingamerica')));
 t('no obit link for modern deaths', !CS.researchLinks({ fn: 'A', ln: 'B', dy: 2020 }).some(l => l.url.includes('chroniclingamerica')));
 
+/* ---------- grave-numbered blocks (sgBlocks) + new registers ---------- */
+section('sgBlocks + registers');
+// declared grave-numbered block: grave column carries the position -> becomes lot
+const sgbModel = CS.buildModel({
+  meta: { cemetery: 'X', fagCemeteryId: 779, cem: { lat: 43.37, lng: -84.66 }, declination: -6.6, asOf: '' },
+  sections: {}, maps: [], sgBlocks: ['R'], requests: [], memorials: [],
+  roster: [
+    [1, 'Doe, Jane', 'F', '', '', '', '', '', 'R', '1', '88', '', 0, '', ''],
+    [2, 'Doe, John', 'M', '', '', '', '', '', 'B', '27', '2', '', 0, '', ''],
+  ],
+}, {});
+t('sgBlocks swaps grave->lot', sgbModel.roster[0].lot === '88' && sgbModel.roster[0].grave === '');
+t('sgBlocks leaves lot blocks alone', sgbModel.roster[1].lot === '27' && sgbModel.roster[1].grave === '2');
+// real dataset: Riverside grave-numbered blocks locate at drawn positions
+const rsCem = DS.cemeteries.find(c => c.id === 1506);
+if (rsCem) {
+  const rsModel = CS.buildModel(rsCem.data, {});
+  const rRow = rsModel.roster.find(r => r.block === 'R' && isFinite(parseInt(r.lot)));
+  const rLoc = rRow && CS.locate(rsModel, { section: '*', sub: '', block: 'R', lot: rRow.lot, grave: '' });
+  t('riverside R roster row swapped', !!rRow, rRow && JSON.stringify([rRow.lot, rRow.grave]));
+  const mLoc = CS.locate(rsModel, { section: '*', sub: '', block: 'MAUSO', lot: '150', grave: '' });
+  t('riverside R locates on plat', rLoc && (rLoc.level === 'lot' || rLoc.level === 'adjacent'), rLoc && rLoc.level);
+  t('riverside MAUSO crypt locates on plat', mLoc && (mLoc.level === 'lot' || mLoc.level === 'adjacent'), mLoc && mLoc.level);
+}
+// Ithaca static register baked and parsed
+const ithCem = DS.cemeteries.find(c => c.id === 1775380);
+t('ithaca roster baked', ithCem && ithCem.data.roster.length > 4900, ithCem && String(ithCem.data.roster.length));
+if (ithCem) {
+  const ithModel = CS.buildModel(ithCem.data, {});
+  const secs = new Set(ithModel.roster.map(r => r.section));
+  t('ithaca sections parsed', secs.has('Old Plat') && secs.has('2nd ADD'), [...secs].slice(0, 6).join('|'));
+  const matched = ithModel.roster.filter(r => r.mem).length;
+  t('ithaca roster matches memorials', matched > 1500, String(matched));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -244,6 +244,8 @@ CS.normalizeDataset = function (raw) {
           },
           sections: c.sections || {},
           maps: c.maps || [],
+          sgBlocks: c.sgBlocks || [],
+          rosterAsOf: c.rosterAsOf || null,
           requests: c.requests || [],
           memorials: c.memorials || [],
           roster: c.roster || [],
@@ -281,6 +283,7 @@ CS.buildModel = function (data, updates) {
 
   const profile = (data.meta && data.meta.fagCemeteryId === 1252) ? 'oakgrove' : 'generic';
   model.profile = profile;
+  model.rosterAsOf = data.rosterAsOf || null;
 
   /* memorials: baked, then overlay updates (by id) */
   const memRows = new Map();
@@ -311,6 +314,7 @@ CS.buildModel = function (data, updates) {
   function nameFromFag(n) { return n; } // FAG fullName is "First Middle Last"
 
   /* roster */
+  const sgBlocks = new Set(data.sgBlocks || []);
   for (const row of ((updates.roster && updates.roster.length ? updates.roster : data.roster) || [])) {
     const [key, name, sex, bd, dd, burial, section, sub, block, lot, grave, status, flags, note, formerName] = row;
     const sn = CS.splitName(name);
@@ -318,6 +322,9 @@ CS.buildModel = function (data, updates) {
     let rLot = String(lot || ''), rGrave = String(grave || '');
     // Single Grave: BS&A stores the cell number in the grave field (OAKGROVE-14-{row}--{cell})
     if (section === 'Single Grave' && !rLot && rGrave) { rLot = rGrave; rGrave = ''; }
+    // grave-numbered blocks (declared by the cemetery's geometry, e.g. Riverside
+    // R/MAUSO): the lot column is a constant and the grave number is the position
+    if (sgBlocks.has(normBlock(block)) && rGrave && (!rLot || rLot === '1')) { rLot = rGrave; rGrave = ''; }
     // generic cemeteries: numeric register sections align with parsed "Section N";
     // a sectionless register row with block/lot still keys to the '*' bucket
     let rSection = section || '';
@@ -339,6 +346,25 @@ CS.buildModel = function (data, updates) {
       sk: CS.normName(name) + (formerName ? ' ' + CS.normName(formerName) : ''),
       dyb: !yOf(dd) && !!yOf(burial), // "death year" actually came from the burial date
     });
+  }
+
+  /* field-confirmed GPS: the user stood at the stone and saved a fix — the
+     best evidence there is. The pin becomes the person's own position (so
+     search/map/guide all use it) and, via plot parsing, an anchor that
+     improves locate for everyone in the same lot and block. */
+  const fieldGps = updates.fieldGps || {};
+  const cemHome = data.meta && data.meta.cem;
+  for (const [pk, g] of Object.entries(fieldGps)) {
+    if (!g || g.lat == null || g.lng == null) continue;
+    if (cemHome && CS.distM(g.lat, g.lng, cemHome.lat, cemHome.lng) > 800) continue; // wrong-cemetery guard
+    if (pk.startsWith('ros:')) {
+      const key = pk.slice(4);
+      const r = model.roster.find(x => String(x.key) === key);
+      if (r) r.fieldGps = g;
+    } else {
+      const mem = model.memById.get(+pk);
+      if (mem) { mem.fieldGps = g; mem.lat = g.lat; mem.lng = g.lng; }
+    }
   }
 
   /* requests: updates replace baked entirely (a refresh is a full snapshot) */
@@ -365,8 +391,9 @@ CS.buildModel = function (data, updates) {
 
   buildPlotIndex(model);
   buildAnchorIndex(model);
-  deriveSections(model);
   matchRosterToMemorials(model);
+  addRosterAnchors(model);   // register position × matched memorial GPS
+  deriveSections(model);
   for (const req of model.requests) enrichRequest(model, req);
   return model;
 };
@@ -383,6 +410,39 @@ function buildAnchorIndex(model) {
     seenCoord.set(ck, true);
     if (!w) continue;
     const k = m.p.section + '|' + (m.p.sub || '') + '|' + (m.p.block || '') + '|' + (parseInt(m.p.lot) || m.p.lot || '');
+    if (!model.anchorIndex.has(k)) model.anchorIndex.set(k, []);
+    model.anchorIndex.get(k).push({ e: en.e, n: en.n });
+  }
+  // field-confirmed pins on register-only people: their plot buckets get an
+  // anchor even though no memorial carries the coordinates
+  for (const r of model.roster) {
+    const g = r.fieldGps;
+    if (!g || !r.section) continue;
+    const en = model.proj.toEN(g.lat, g.lng);
+    const k = r.section + '|' + (r.sub || '') + '|' + (r.block || '') + '|' + (parseInt(r.lot) || r.lot || '');
+    if (!model.anchorIndex.has(k)) model.anchorIndex.set(k, []);
+    model.anchorIndex.get(k).push({ e: en.e, n: en.n });
+  }
+}
+
+/* Register rows matched to GPS-tagged memorials cross-multiply: the register
+   says where the grave sits in the cemetery's own scheme, the photo says
+   where that is on Earth — together they anchor the whole row/lot, which is
+   how register-only cemeteries (no plat, no FAG plots) become navigable. */
+function addRosterAnchors(model) {
+  const seen = new Set();
+  for (const r of model.roster) {
+    const m = r.mem;
+    if (!m || m.lat == null || m.lng == null || !r.section) continue;
+    const k = r.section + '|' + (r.sub || '') + '|' + (r.block || '') + '|' + (parseInt(r.lot) || r.lot || '');
+    const mk = m.p && m.p.section
+      ? m.p.section + '|' + (m.p.sub || '') + '|' + (m.p.block || '') + '|' + (parseInt(m.p.lot) || m.p.lot || '')
+      : null;
+    if (k === mk) continue;                        // already anchored by the memorial's own plot
+    const ck = k + '@' + m.lat.toFixed(6) + ',' + m.lng.toFixed(6);
+    if (seen.has(ck)) continue;
+    seen.add(ck);
+    const en = model.proj.toEN(m.lat, m.lng);
     if (!model.anchorIndex.has(k)) model.anchorIndex.set(k, []);
     model.anchorIndex.get(k).push({ e: en.e, n: en.n });
   }
@@ -460,6 +520,23 @@ function matchRosterToMemorials(model) {
       if (!best.ros || best.rosScore < bestScore) { best.ros = r; best.rosScore = bestScore; }
     } else if (best && bestScore >= 55) {
       r.memMaybe = best;
+    }
+  }
+  // era-gated fallback for dateless registers (e.g. a 1941 sexton book): a
+  // row with no dates may claim its unique full-name match among memorials
+  // who died within the register's era — uniqueness plus the era cap keep a
+  // later burial of the same name from being grabbed.
+  const asOf = model.rosterAsOf;
+  if (asOf) {
+    for (const r of model.roster) {
+      if (r.mem || r.by || r.dy || !r.cf) continue;
+      const cands = [...new Set(byLast.get('n:' + r.nl) || [])]
+        .filter(m => !m.ros && m.dy && m.dy <= asOf && m.cf &&
+                     (m.cf === r.cf || (m.fr && m.fr === r.fr)));
+      if (cands.length === 1) {
+        r.mem = cands[0];
+        cands[0].ros = r; cands[0].rosScore = 60;
+      }
     }
   }
 }

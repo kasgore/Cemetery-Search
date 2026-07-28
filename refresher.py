@@ -60,9 +60,26 @@ DEFAULT_CONFIG = {
     "registers": [
         {"cemetery_id": 1252, "uid": 2024, "max_key": 10500, "seed": "seed/roster-1252.json", "section_map": "oakgrove"},
         {"cemetery_id": 1506, "uid": 1205, "max_key": 12000, "seed": "seed/roster-1506.json"},  # Riverside, City of Alma
+        # static: seed-only, no BS&A pulls (interment.net transcription 1211, April 2024)
+        {"cemetery_id": 1775380, "static": True, "seed": "seed/roster-1775380.json"},  # Ithaca
+        # static: Gratiot County Cemeteries Online (mfhn.com grid via migenweb mirror,
+        # crawled 2026-07-27 by tools/build-gratiotdb-rosters.js); positions are
+        # section-row-position walk records or register lot-grave codes
+        {"cemetery_id": 1434, "static": True, "seed": "seed/roster-1434.json"},        # Pritchard
+        {"cemetery_id": 1491, "static": True, "seed": "seed/roster-1491.json"},        # Riverdale
+        {"cemetery_id": 445, "static": True, "seed": "seed/roster-445.json"},          # Elm Hall
+        {"cemetery_id": 2257472, "static": True, "seed": "seed/roster-2257472.json"},  # French Seville
+        {"cemetery_id": 2357025, "static": True, "seed": "seed/roster-2357025.json"},  # St. Patricks-Irishtown
+        {"cemetery_id": 154, "static": True, "seed": "seed/roster-154.json"},          # Brady (Seville Twp)
+        {"cemetery_id": 1747, "static": True, "seed": "seed/roster-1747.json"},        # Sibley-Welch
+        # static: Chippewa Twp 1941 sexton records (isabella.migenweb.org);
+        # as_of_year gates dateless name-matching to era-plausible burials
+        {"cemetery_id": 159825, "static": True, "seed": "seed/roster-159825.json", "as_of_year": 1941},  # Chippewa Twp
+        # static: Lee Twp walk-order transcription (midland.migenweb.org/lee.html)
+        {"cemetery_id": 159973, "static": True, "seed": "seed/roster-159973.json"},    # Lee Twp
     ],
     # static plat-map geometry per cemetery (produced by tools/ pipeline)
-    "geometry": {"1252": "geometry/oakgrove.json"},
+    "geometry": {"1252": "geometry/oakgrove.json", "1506": "geometry/riverside.json"},
     # who holds the burial book — the call to make when a grave can't be found.
     # Sources: Gratiot Co. Cemetery Listing 2025-03-24 (gratiotmi.com), city/township sites.
     "contacts": {
@@ -595,12 +612,17 @@ def build_output(cfg, registry):
                 geom = json.load(f)
             entry["sections"] = geom.get("sections") or {}
             entry["maps"] = geom.get("maps") or []
+            if geom.get("sgBlocks"):
+                entry["sgBlocks"] = geom["sgBlocks"]
         for reg in cfg["registers"]:
             if reg["cemetery_id"] == cem["id"]:
                 roster = read_state(f"cem/{cid}-roster.json", [])
                 if roster:
                     entry["roster"] = roster
-                    entry["bsaUid"] = reg["uid"]
+                    if reg.get("uid"):
+                        entry["bsaUid"] = reg["uid"]
+                    if reg.get("as_of_year"):
+                        entry["rosterAsOf"] = reg["as_of_year"]
         cemeteries.append(entry)
 
     payload = {
@@ -731,6 +753,8 @@ def run_cycle(cfg, force=False):
 
     # 4. BS&A registers — rarely (a repo-shipped seed counts as fresh on first run)
     for reg in cfg["registers"]:
+        if reg.get("static"):
+            continue  # seed-only source (e.g. interment.net transcription) — nothing to pull
         cid = str(reg["cemetery_id"])
         key = f"reg_{reg['uid']}"
         if key not in ts and read_state(f"cem/{cid}-roster.json"):

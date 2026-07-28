@@ -87,8 +87,10 @@ function getModel(cemId) {
   const cem = cemById.get(cemId);
   if (!cem) return null;
   let model;
+  const fieldGps = {};
+  for (const [pk, p] of Object.entries(store.progress)) if (p.gps) fieldGps[pk] = p.gps;
   try {
-    model = CS.buildModel(cem.data, store.updates[cemId] || {});
+    model = CS.buildModel(cem.data, Object.assign({}, store.updates[cemId] || {}, { fieldGps }));
   } catch (e) {
     console.error('buildModel failed for', cem.name, e);
     delete store.updates[cemId];
@@ -772,8 +774,11 @@ $('guide-savegps').addEventListener('click', () => {
   if (!guideTarget || !guideTarget.pk) return;
   const gps = { lat: +geo.pos.lat.toFixed(6), lng: +geo.pos.lng.toFixed(6), acc: Math.round(geo.pos.acc) };
   setProgress(guideTarget.pk, { gps });
+  // the saved fix becomes an anchor: rebuild this cemetery's model so the
+  // whole lot/block sharpens for everyone still to be found there
+  if (guideModel && guideModel.cem) models.delete(String(guideModel.cem.id));
   if (navigator.clipboard) navigator.clipboard.writeText(gps.lat + ', ' + gps.lng).catch(() => {});
-  toast(`Saved & copied ${gps.lat}, ${gps.lng} (±${gps.acc} m) — it's also on the card and the Finished list`, 4200);
+  toast(`Saved & copied ${gps.lat}, ${gps.lng} (±${gps.acc} m) — this pin also sharpens the map for its whole lot`, 4200);
 });
 $('guide-note').addEventListener('input', () => {
   if (guideTarget && guideTarget.pk) setProgress(guideTarget.pk, { note: $('guide-note').value });
@@ -864,7 +869,22 @@ function compassPoint(b) {
 /* ---------------- map layers ---------------- */
 function modelLayerCache(model) {
   if (model._layerCache) return model._layerCache;
-  const lots = [], blocks = [], roads = [];
+  const lots = [], blocks = [], roads = [], graves = [];
+  // every GPS-tagged memorial at its true position — for well-photographed
+  // cemeteries this is a full grave map with no plat needed
+  const cc = model.cem && model.cem.data.meta.cem;
+  const seenCoord = new Set();
+  if (cc) {
+    for (const m of model.memorials) {
+      if (m.lat == null || m.lng == null) continue;
+      const d = CS.distM(m.lat, m.lng, cc.lat, cc.lng);
+      if (!isFinite(d) || d < 5 || d > 800) continue;   // default/junk pins
+      const ck = m.lat.toFixed(6) + ',' + m.lng.toFixed(6);
+      if (seenCoord.has(ck)) continue;                  // bulk-pinned families: one dot
+      seenCoord.add(ck);
+      graves.push({ lat: m.lat, lng: m.lng, label: m.last, ph: m.hasGravePhoto, mid: m.mid, model });
+    }
+  }
   for (const m of model.maps) {
     if (!m.transform) continue;
     for (const en of m.entries) {
@@ -886,17 +906,18 @@ function modelLayerCache(model) {
   const sections = Object.entries(model.sections)
     .filter(([label]) => label !== '*')
     .map(([label, s]) => ({ lat: s.lat, lng: s.lng, label }));
-  model._layerCache = { lots, blocks, roads, sections };
+  model._layerCache = { lots, blocks, roads, sections, graves };
   return model._layerCache;
 }
 
 function buildLayers(cemIds, soloTarget) {
-  const L = { lots: [], blocks: [], roads: [], sections: [], cems: [], targets: [] };
+  const L = { lots: [], blocks: [], roads: [], sections: [], cems: [], targets: [], graves: [] };
   for (const cid of cemIds) {
     const model = getModel(cid);
     if (!model) continue;
     const cache = modelLayerCache(model);
     L.lots.push(...cache.lots);
+    L.graves.push(...cache.graves);
     L.blocks.push(...cache.blocks);
     L.roads.push(...cache.roads);
     L.sections.push(...cache.sections);
@@ -928,7 +949,19 @@ function ensureMap() {
     imagery: imageryPref(),
     onTap: (x, y) => {
       const hit = mainMap.hitTest(x, y);
-      if (hit && hit.ref) openGuide(hit.ref, hit.model);
+      if (hit && hit.ref) { openGuide(hit.ref, hit.model); return; }
+      if (hit && hit.mid && hit.model) {
+        // grave dot: open the guide on that memorial at its true GPS position
+        const mem = hit.model.memById.get(hit.mid);
+        if (!mem) return;
+        openGuide({
+          name: mem.name, ln: mem.last || '', by: mem.by || null, dy: mem.dy || null,
+          mid: mem.mid, rosKey: null,
+          loc: { lat: mem.lat, lng: mem.lng, acc: 8, level: 'gps' },
+          pBest: mem.p && mem.p.section ? mem.p : null, pRos: null,
+          plot: mem.plot,
+        }, hit.model);
+      }
     },
   });
   $('map-zoom-in').addEventListener('click', () => mainMap.zoomAt(mainMap.w / 2, mainMap.h / 2, 1.35));

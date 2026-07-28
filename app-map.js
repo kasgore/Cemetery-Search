@@ -4,7 +4,8 @@
    so any number of cemeteries render on one canvas. Screen: px, y down.
    Layers are plain lat/lng lists prepared by the UI layer:
    { lots:[{lat,lng,label}], blocks:[{lat,lng,label}], roads:[{lat,lng}],
-     sections:[{lat,lng,label}], cems:[{lat,lng,label}], targets:[...] }
+     sections:[{lat,lng,label}], cems:[{lat,lng,label}], targets:[...],
+     graves:[{lat,lng,label,ph}] — GPS-tagged memorials at true position }
    ========================================================== */
 (function () {
 'use strict';
@@ -66,7 +67,7 @@ function MapView(canvas, proj, opts) {
   this.scale = 1.4;                 // px per meter
   this.cx = 0; this.cy = 0;         // world center (m east/north of datum)
   this.user = null;                 // {lat,lng,acc}
-  this.layers = { lots: [], blocks: [], roads: [], sections: [], cems: [], targets: [] };
+  this.layers = { lots: [], blocks: [], roads: [], sections: [], cems: [], targets: [], graves: [] };
   this.highlight = null;            // {lat,lng,acc}
   this.imagery = opts.imagery !== false;
   this._imageryDrawn = false;
@@ -191,6 +192,33 @@ MapView.prototype.draw = function () {
     ctx.strokeText(txt, x, y);
   };
 
+  // graves: GPS-tagged memorials at their true position (under the plat grid).
+  // Solid dot = stone photographed, ring = not — in the field a solid dot is a
+  // stone you can navigate by.
+  if (s > 0.7 && L.graves.length) {
+    const showNames = s > 4.5;
+    ctx.font = 'italic 8px JetBrains Mono, monospace';
+    for (const pt of L.graves) {
+      const p = this.llToScreen(pt.lat, pt.lng);
+      if (!inView(p)) continue;
+      ctx.lineWidth = 1.2;   // halo() bumps it to 3 — reset per dot
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 2.1, 0, Math.PI * 2);
+      if (pt.ph) {
+        ctx.fillStyle = onImg ? 'rgba(255,253,247,0.95)' : 'rgba(74,93,58,0.8)';
+        ctx.fill();
+        if (onImg) { ctx.strokeStyle = 'rgba(20,24,15,0.9)'; ctx.stroke(); }
+      } else {
+        ctx.strokeStyle = onImg ? 'rgba(255,253,247,0.9)' : 'rgba(74,93,58,0.65)';
+        ctx.stroke();
+      }
+      if (showNames && pt.label) {
+        halo(pt.label, p.x + 4, p.y - 3);
+        ctx.fillStyle = onImg ? 'rgba(20,24,15,0.95)' : 'rgba(60,72,48,0.85)';
+        ctx.fillText(pt.label, p.x + 4, p.y - 3);
+      }
+    }
+  }
   // lot grid
   if (s > 0.55 && L.lots.length) {
     const showNums = s > 3.4;
@@ -395,6 +423,16 @@ MapView.prototype.hitTest = function (x, y, radius) {
     const p = this.llToScreen(t.lat, t.lng);
     const d = Math.hypot(p.x - x, p.y - y);
     if (d < bestD) { bestD = d; best = t; }
+  }
+  if (best) return best;
+  // grave dots are tappable too, but only while they're drawn (zoomed in)
+  if (this.scale > 0.7) {
+    let bd = 12;
+    for (const g of this.layers.graves) {
+      const p = this.llToScreen(g.lat, g.lng);
+      const d = Math.hypot(p.x - x, p.y - y);
+      if (d < bd) { bd = d; best = g; }
+    }
   }
   return best;
 };
