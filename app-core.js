@@ -394,6 +394,7 @@ CS.buildModel = function (data, updates) {
   buildAnchorIndex(model);
   matchRosterToMemorials(model);
   addRosterAnchors(model);   // register position × matched memorial GPS
+  fitWalkRows(model);        // live row-line fits — every saved pin re-fits
   deriveSections(model);
   for (const req of model.requests) enrichRequest(model, req);
   return model;
@@ -425,6 +426,86 @@ function buildAnchorIndex(model) {
     model.anchorIndex.get(k).push({ e: en.e, n: en.n });
   }
 }
+
+/* Walk-order registers record section-row-position in physical walk order,
+   and cemetery rows are straight lines — so a least-squares line through a
+   row's GPS-anchored members places EVERYONE registered in that row. Runs at
+   every model build, so a field-saved pin refits its row in real time.
+   Gates keep it honest: plausible stone spacing, anchors must agree with a
+   straight line, and placement stays within the anchored span (+ a short
+   extension). Skips positions a real plat map already draws. */
+function fitWalkRows(model) {
+  const med = a => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+  const staticKeys = new Set();
+  for (const m of model.maps) {
+    for (const e of m.entries) staticKeys.add(m.section + '|' + e[0] + '|' + e[1]);
+  }
+  const rows = new Map();
+  for (const r of model.roster) {
+    const pos = parseInt(r.lot);
+    if (!r.section || !r.block || !isFinite(pos)) continue;
+    const k = r.section + '|' + r.block;
+    if (!rows.has(k)) rows.set(k, { section: r.section, row: r.block, anchors: new Map(), members: new Set() });
+    const R = rows.get(k);
+    R.members.add(pos);
+    let en = null;
+    if (r.fieldGps) en = model.proj.toEN(r.fieldGps.lat, r.fieldGps.lng);
+    else if (r.mem && r.mem.lat != null) en = model.proj.toEN(r.mem.lat, r.mem.lng);
+    if (en) {
+      if (!R.anchors.has(pos)) R.anchors.set(pos, []);
+      R.anchors.get(pos).push(en);
+    }
+  }
+  const bySection = new Map();
+  const resids = [];
+  for (const R of rows.values()) {
+    const pts = [...R.anchors.entries()].map(([pos, list]) => ({
+      pos,
+      e: list.reduce((s, x) => s + x.e, 0) / list.length,
+      n: list.reduce((s, x) => s + x.n, 0) / list.length,
+    }));
+    if (pts.length < 2) continue;
+    const N = pts.length;
+    const sp = pts.reduce((s, p) => s + p.pos, 0), spp = pts.reduce((s, p) => s + p.pos * p.pos, 0);
+    const den = N * spp - sp * sp;
+    if (!den) continue;
+    const fit = key => {
+      const sv = pts.reduce((s, p) => s + p[key], 0), spv = pts.reduce((s, p) => s + p.pos * p[key], 0);
+      const slope = (N * spv - sp * sv) / den;
+      return { slope, icept: (sv - slope * sp) / N };
+    };
+    const fe = fit('e'), fn = fit('n');
+    const step = Math.hypot(fe.slope, fn.slope);
+    if (step < 0.5 || step > 5) continue;
+    const rowResid = pts.map(p => Math.hypot(fe.icept + fe.slope * p.pos - p.e, fn.icept + fn.slope * p.pos - p.n));
+    if (pts.length >= 3 && med(rowResid) > 8) continue;
+    resids.push(...rowResid);
+    const aMin = Math.min(...pts.map(p => p.pos)), aMax = Math.max(...pts.map(p => p.pos));
+    const ext = Math.min(6, Math.max(2, aMax - aMin));
+    if (!bySection.has(R.section)) bySection.set(R.section, []);
+    const entries = bySection.get(R.section);
+    for (const pos of R.members) {
+      if (pos < aMin - ext || pos > aMax + ext) continue;
+      if (staticKeys.has(R.section + '|' + R.row + '|' + pos)) continue;
+      entries.push([R.row, String(pos),
+        Math.round((fe.icept + fe.slope * pos) * 100) / 100,
+        Math.round((fn.icept + fn.slope * pos) * 100) / 100]);
+    }
+  }
+  if (!bySection.size) return;
+  const looMedian = Math.round((resids.length ? med(resids) : 6) * 10) / 10;
+  const quality = looMedian <= 4 ? 'fair' : 'approx';
+  for (const [section, entries] of bySection) {
+    if (!entries.length) continue;
+    model.maps.push({
+      file: 'walk-order-rows', dynamic: true, section, sub: '', style: 'rows',
+      page: { w: 0, h: 0 },
+      transform: { a: 1, b: 0, c: 0, d: 0, f: 1, g: 0 },   // entries are local meters
+      quality, looMedian, entries,
+    });
+  }
+}
+CS.fitWalkRows = fitWalkRows;
 
 /* Register rows matched to GPS-tagged memorials cross-multiply: the register
    says where the grave sits in the cemetery's own scheme, the photo says

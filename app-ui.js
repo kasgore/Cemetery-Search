@@ -95,18 +95,23 @@ async function syncProgress() {
     });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const merged = (await res.json()).progress || {};
-    let adopted = 0;
+    let adopted = 0, adoptedGps = false;
     for (const [pk, v] of Object.entries(merged)) {
       const mine = store.progress[pk];
-      if (!mine || (v.ts || 0) > (mine.ts || 0)) { store.progress[pk] = v; adopted++; }
+      if (!mine || (v.ts || 0) > (mine.ts || 0)) {
+        store.progress[pk] = v; adopted++;
+        if (v.gps) adoptedGps = true;
+      }
     }
     if (adopted) {
       // full cross-device sync: changes made on the other device show up in
       // whatever view is open, not just after a reload
       save(); updateStats();
+      if (adoptedGps) models.clear();   // pins change anchors + row fits — rebuild
       const active = document.querySelector('.panel.active');
       if (active && active.id === 'panel-walk') renderWalk();
       if (active && active.id === 'panel-queue') renderQueue();
+      if (active && active.id === 'panel-map' && adoptedGps && mainMap) refreshMapLayers();
       if (guideTarget && guideTarget.pk) { syncGuideButtons(); renderGuidePhoto(); }
     }
     const n = Object.values(store.progress).filter(p => p.st || p.note || p.gps || p.photo || p.up).length;
@@ -1129,8 +1134,13 @@ $('guide-savegps').addEventListener('click', () => {
   const gps = { lat: +geo.pos.lat.toFixed(6), lng: +geo.pos.lng.toFixed(6), acc: Math.round(geo.pos.acc) };
   setProgress(guideTarget.pk, { gps });
   // the saved fix becomes an anchor: rebuild this cemetery's model so the
-  // whole lot/block sharpens for everyone still to be found there
-  if (guideModel && guideModel.cem) models.delete(String(guideModel.cem.id));
+  // whole lot/block sharpens — and walk-order rows REFIT — right now, in
+  // the field, with this pin included
+  if (guideModel && guideModel.cem) {
+    models.delete(String(guideModel.cem.id));
+    if (mainMap) refreshMapLayers();
+    if (guideMap && guideTarget) guideMap.layers = buildLayers([String(guideModel.cem.id)], guideTarget);
+  }
   if (navigator.clipboard) navigator.clipboard.writeText(gps.lat + ', ' + gps.lng).catch(() => {});
   toast(`Saved & copied ${gps.lat}, ${gps.lng} (${fmtAcc(gps.acc)}) — this pin also sharpens the map for its whole lot`, 4200);
 });

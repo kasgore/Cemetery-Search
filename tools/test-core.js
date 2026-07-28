@@ -395,5 +395,50 @@ if (ithCem) {
   t('ithaca roster matches memorials', matched > 1500, String(matched));
 }
 
+/* ---------- live walk-row fitting ---------- */
+section('fitWalkRows');
+// row 'A' positions 1..10; anchors at pos 2 (10 m east steps) and pos 8 —
+// the fit must place pos 5 on the line between them
+const wrModel = CS.buildModel({
+  meta: { cemetery: 'W', fagCemeteryId: 780, cem: { lat: 43.37, lng: -84.66 }, declination: -6.6, asOf: '' },
+  sections: {}, maps: [], requests: [],
+  memorials: [
+    [7001, 'Amy Ash', '', 1900, 1960, 'Row A Lot 2', 43.37, -84.66, 1, ''],
+    [7002, 'Ben Birch', '', 1900, 1961, 'Row A Lot 8', 43.37, -84.6598519, 1, ''],  // ~12 m east
+  ],
+  // rows 2 and 8 carry the same people as the memorials, so the register
+  // matcher links them and their GPS becomes the row's anchors
+  roster: Array.from({ length: 10 }, (_, i) => [
+    i + 1,
+    i + 1 === 2 ? 'ASH, AMY' : i + 1 === 8 ? 'BIRCH, BEN' : 'ROW, PERSON' + (i + 1),
+    '', i + 1 === 2 ? '1900' : i + 1 === 8 ? '1900' : '',
+    i + 1 === 2 ? '1960' : i + 1 === 8 ? '1961' : '',
+    '', '*', '', 'A', String(i + 1), '', '', 0, '', '',
+  ]),
+}, {});
+const dynMap = wrModel.maps.find(m => m.dynamic);
+t('dynamic row map created', !!dynMap, JSON.stringify(wrModel.maps.map(m => m.file)));
+if (dynMap) {
+  const p5 = dynMap.entries.find(e => e[0] === 'A' && e[1] === '5');
+  t('mid-row position interpolated', !!p5, JSON.stringify(dynMap.entries.map(e => e[1])));
+  if (p5) {
+    // pos 2 at e=0, pos 8 at e~12 -> pos 5 at e~6
+    t('interpolation lands mid-line', Math.abs(p5[2] - 6) < 1.5, String(p5[2]));
+  }
+  const loc5 = CS.locate(wrModel, { section: '*', sub: '', block: 'A', lot: '5', grave: '' });
+  t('locate hits the fitted row', loc5 && loc5.level === 'lot', loc5 && loc5.level);
+}
+// a "row" whose anchors aren't a line (spacing gate) must be refused
+const badModel = CS.buildModel({
+  meta: { cemetery: 'W2', fagCemeteryId: 781, cem: { lat: 43.37, lng: -84.66 }, declination: -6.6, asOf: '' },
+  sections: {}, maps: [], requests: [],
+  memorials: [
+    [7101, 'C D', '', 0, 0, 'Row B Lot 1', 43.37, -84.66, 1, ''],
+    [7102, 'E F', '', 0, 0, 'Row B Lot 2', 43.3708, -84.66, 1, ''],  // ~89 m for ONE step
+  ],
+  roster: [[1, 'X, Y', '', '', '', '', '*', '', 'B', '1', '', '', 0, '', ''], [2, 'X, Z', '', '', '', '', '*', '', 'B', '2', '', '', 0, '', '']],
+}, {});
+t('implausible spacing refused', !badModel.maps.some(m => m.dynamic), JSON.stringify(badModel.maps.length));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
