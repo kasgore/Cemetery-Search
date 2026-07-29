@@ -1,49 +1,39 @@
 # Cemetery Search — Portainer stack (upload this file, or paste it in the web editor).
 #
-# Reachable TWO ways, and that is the point:
-#   * 192.168.5.14 ports 80/443 (macvlan) — devices on the home LAN
-#   * the PI's OWN address, ports 8420/8443 — what Tailscale can reach from
-#     cellular. A macvlan container is invisible to its own host, so
-#     Tailscale (running on the host) could never forward to 192.168.5.14 —
-#     which is why photos and map tiles only moved once Wi-Fi came on.
+# ONE address that works everywhere, including cellular:
+#     https://rpidocker.tail85744b.ts.net:8443/
+#     (or https://100.70.196.66:8443/ )
 #
-# In the field use the Pi's Tailscale name, e.g.
-#     https://<your-pi>.<your-tailnet>.ts.net:8443/
-# Use that same URL at home too, so the phone keeps ONE set of saved marks
-# and photos (browser storage is per-origin, so a different URL = a
-# different local store — they still converge through the Pi, but one URL
-# is simpler).
+# Why no macvlan any more: a macvlan container gets its own LAN IP but is
+# invisible to its own host, and Tailscale runs ON the host — so it could
+# never forward to 192.168.5.14. That is exactly why photos and map tiles
+# only moved once Wi-Fi came on. Publishing ports on the host instead means
+# Tailscale serves the app from anywhere, and the home LAN can still reach
+# it at the Pi's own address on the same ports.
 #
-# Put the Tailscale IP and MagicDNS name in CERT_HOSTS below so the
-# certificate covers them, then accept the warning once per device.
+# Use that one URL on the phone AND the PC: browser storage is per-address,
+# so sticking to a single URL keeps one set of marks and photos on each
+# device (they sync through the Pi either way).
+#
+# Accept the self-signed certificate warning once per device; the cert
+# covers the names in CERT_HOSTS below.
 services:
   cemetery-search:
     image: cemetery-search:latest
     container_name: cemetery-search
     restart: unless-stopped
     ports:
-      - "8420:80"     # http  via the Pi's own IP / Tailscale
-      - "8443:443"    # https via the Pi's own IP / Tailscale
+      - "8420:80"     # http
+      - "8443:443"    # https — use this one (GPS/compass need a secure page)
     environment:
       PORT: "80"
       HTTPS_PORT: "443"
       REFRESH_HOURS: "6"
       RADIUS_MILES: "15"
-      # ADD your Pi's Tailscale IP and name here (keep the first two):
-      CERT_HOSTS: "192.168.5.14,localhost,100.64.0.1,your-pi.your-tailnet.ts.net"
+      CERT_HOSTS: "rpidocker.tail85744b.ts.net,100.70.196.66,192.168.5.14,localhost"
       TZ: "America/New_York"
     volumes:
-      - cemetery_data:/data
-    networks:
-      InternalNetwork:
-        ipv4_address: 192.168.5.14
-      bridged: {}
+      - cemetery_data:/data   # keeps your field log, photos and caches across rebuilds
 
 volumes:
   cemetery_data:
-
-networks:
-  InternalNetwork:
-    external: true      # the existing macvlan (sportsbets is on it too)
-  bridged:
-    driver: bridge      # required for the published ports above
