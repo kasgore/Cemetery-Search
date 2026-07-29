@@ -45,7 +45,11 @@ t('salt river row-lot-space', (() => { const p = pg('Row 4 Lot 12 Space 2'); ret
 t('salt river lowercase', (() => { const p = pg('row 14 lot 3'); return p && p.block === '14' && p.lot === '3'; })());
 t('ridgelawn section-comma', (() => { const p = pg('Section A, Lot 5, Grave B'); return p && p.section === 'Section A' && p.lot === '5' && p.grave === 'B'; })());
 t('ridgelawn dashed', (() => { const p = pg('Section-C, Plot-12, Grave-A'); return p && p.section === 'Section C' && p.grave === 'A'; })());
-t('ithaca dash code', (() => { const p = pg('Ithaca-2nd ADD-31--2'); return p && p.section === '2nd ADD' && p.block === '31' && p.grave === '2'; })());
+// Ithaca's register writes CEM-SECTION-LOT-<half>-GRAVE: an empty or
+// half-lot 4th field means the 3rd field is the LOT, not a block
+t('ithaca dash code', (() => { const p = pg('Ithaca-2nd ADD-31--2'); return p && p.section === '2nd ADD' && p.lot === '31' && p.block === '' && p.grave === '2'; })());
+t('ithaca half-lot dash code', (() => { const p = pg('Ithaca-Old Plat-247-S 1/2-003'); return p && p.section === 'Old Plat' && p.lot === '247' && p.grave === '003'; })());
+t('real block dash code still a block', (() => { const p = pg('Maple-North-B-51-3'); return p && p.section === 'North' && p.block === 'B' && p.lot === '51' && p.grave === '3'; })());
 t('terse 12B', (() => { const p = pg('12B'); return p && p.section === '*' && p.lot === '12' && p.grave === 'B'; })());
 t('bare block letter', (() => { const p = pg('A'); return p && p.section === '*' && p.block === 'A'; })());
 t('bare lot number', (() => { const p = pg('351'); return p && p.section === '*' && p.lot === '351'; })());

@@ -106,6 +106,13 @@ CS.parsePlot = function (plotStr, profile) {
       block = normBlock(dash[2] || '');
       lot = (dash[3] || '').replace(/^0+(?=\d)/, '');
       grave = dash[4] || '';
+      // "CEM-SECTION-LOT-<half>-GRAVE": an empty or half-lot 4th field
+      // ("N 1/2", "S. 1/2") means the 3rd field was the LOT, not a block —
+      // Ithaca's city register is written this way
+      if (!lot || /^[NSEW]\.?\s*\d\/\d$/i.test(lot)) {
+        lot = block;
+        block = '';
+      }
     } else {
       // terse codes: "12B", "12-B", bare block letter "A"
       let m = s.match(/^(\d{1,4})\s*-?\s*([A-Za-z])$/);

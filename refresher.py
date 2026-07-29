@@ -81,7 +81,13 @@ DEFAULT_CONFIG = {
     # static plat-map geometry per cemetery (produced by tools/ pipeline)
     # walk-order row grids are NOT baked — app-core fits them live at model
     # build (CS.fitWalkRows), so field-saved GPS pins refit rows in real time
-    "geometry": {"1252": "geometry/oakgrove.json", "1506": "geometry/riverside.json"},
+    "geometry": {
+        "1252": "geometry/oakgrove.json",
+        "1506": "geometry/riverside.json",
+        # City of Ithaca's own cemetery-map spreadsheet, georeferenced
+        # (tools/extract-ithaca-grid.py + build-ithaca-geometry.js)
+        "1775380": "geometry/ithaca.json",
+    },
     # who holds the burial book — the call to make when a grave can't be found.
     # Sources: Gratiot Co. Cemetery Listing 2025-03-24 (gratiotmi.com), city/township sites.
     "contacts": {
