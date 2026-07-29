@@ -234,6 +234,38 @@
   #guide-minimap { width: 100%; height: 34vh; border: 1px solid var(--line); background: #ece5d4; touch-action: none; }
   .guide-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
   .guide-actions .wide { grid-column: 1 / -1; }
+  /* Outcome buttons: unmistakable when set — filled, ringed, and a tick.
+     In the field, at arm's length, in sunlight, "did that register?" must
+     never be a question. */
+  .guide-actions button.marked {
+    color: var(--bg); font-weight: 700; border-width: 2px;
+    box-shadow: 0 0 0 3px rgba(0,0,0,0.10), inset 0 0 0 1px rgba(255,255,255,0.35);
+  }
+  .guide-actions button.marked.m-done { background: #2e7d32; border-color: #1b5e20; }
+  .guide-actions button.marked.m-nostone { background: #a07a2c; border-color: #7a5c1e; }
+  .guide-actions button.marked.m-notfound { background: #8b3a1f; border-color: #6b2b14; }
+  .guide-actions button.marked.m-up { background: #2b5c7a; border-color: #1e4459; }
+  @keyframes markPulse { 0% { transform: scale(1); } 40% { transform: scale(1.06); } 100% { transform: scale(1); } }
+  .guide-actions button.justmarked { animation: markPulse 260ms ease-out; }
+  /* the whole panel flashes its outcome colour for a beat */
+  @keyframes panelFlash { 0% { box-shadow: inset 0 0 0 0 currentColor; } 30% { box-shadow: inset 0 0 0 6px currentColor; } 100% { box-shadow: inset 0 0 0 0 currentColor; } }
+  #guide.flash-done { color: rgba(46,125,50,0.55); animation: panelFlash 500ms ease-out; }
+  #guide.flash-nostone { color: rgba(160,122,44,0.55); animation: panelFlash 500ms ease-out; }
+  #guide.flash-notfound { color: rgba(139,58,31,0.55); animation: panelFlash 500ms ease-out; }
+  /* status banner under the name — the state in words, always visible */
+  .guide-state { font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.06em;
+    text-transform: uppercase; padding: 6px 10px; border-radius: 3px; margin-top: 6px; display: none; }
+  .guide-state.show { display: block; }
+  .guide-state.s-done { background: rgba(46,125,50,0.14); color: #1b5e20; border-left: 4px solid #2e7d32; }
+  .guide-state.s-nostone { background: rgba(160,122,44,0.14); color: #6b4f13; border-left: 4px solid #a07a2c; }
+  .guide-state.s-notfound { background: rgba(139,58,31,0.14); color: #6b2b14; border-left: 4px solid #8b3a1f; }
+  /* photo strip */
+  .photo-strip { grid-column: 1 / -1; display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-start; }
+  .photo-thumb { position: relative; }
+  .photo-thumb img { height: 76px; border-radius: 4px; border: 1px solid var(--line); display: block; }
+  .photo-thumb .badge-x { position: absolute; top: -6px; right: -6px; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 50%; width: 20px; height: 20px; line-height: 18px; text-align: center; cursor: pointer; font-size: 0.7rem; }
+  .photo-thumb .st { font-size: 0.58rem; text-align: center; color: var(--ink-soft); font-family: var(--font-mono); }
   #guide .neighbors { display: block; margin-top: 10px; }
 
   /* Search */
@@ -503,6 +535,7 @@
         <div class="guide-vitals" id="guide-vitals"></div>
         <div class="guide-hints" id="guide-hints"></div>
         <div class="guide-plot" id="guide-plot">—</div>
+        <div class="guide-state" id="guide-state"></div>
       </div>
       <button id="guide-close" aria-label="Close">&times;</button>
     </div>
@@ -518,14 +551,10 @@
       <button class="primary" id="guide-done">&#x2713; Photographed</button>
       <button class="secondary" id="guide-nostone">No stone found</button>
       <button class="secondary" id="guide-notfound">Not found</button>
-      <button class="secondary" id="guide-photo">📷 Attach photo</button>
+      <button class="secondary" id="guide-photo">📷 Add photo of this grave</button>
       <button class="secondary" id="guide-uploaded" style="display:none;">⬆ Uploaded to FAG</button>
-      <input type="file" id="guide-photo-input" accept="image/*" capture="environment" style="display:none;">
-      <div id="guide-photo-row" style="grid-column:1/-1; display:none; align-items:center; gap:8px;">
-        <img id="guide-photo-thumb" style="max-height:72px; border-radius:4px; border:1px solid var(--line);" alt="attached photo">
-        <span id="guide-photo-state" class="small"></span>
-        <button class="mini" id="guide-photo-del">✕ remove</button>
-      </div>
+      <input type="file" id="guide-photo-input" accept="image/*" capture="environment" multiple style="display:none;">
+      <div id="guide-photo-row" class="photo-strip" style="display:none;"></div>
       <textarea id="guide-note" class="texty" placeholder="Field note (auto-saves)…" style="grid-column:1/-1; min-height:44px; font-family:var(--font-mono); font-size:0.8rem; padding:8px;"></textarea>
     </div>
     <div class="neighbors" id="guide-neighbors"></div>

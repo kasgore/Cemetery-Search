@@ -648,6 +648,7 @@ function renderFinished() {
 
 /* ---------------- photo upload queue tab ---------------- */
 function personByPk(pk) {
+  pk = String(pk).split('#')[0];   // photo slot suffix isn't part of identity
   if (pk.startsWith('ros:')) {
     const key = pk.slice(4);
     for (const c of DS.cemeteries) {
@@ -682,8 +683,10 @@ async function renderQueue() {
   // photos on the Pi + photos still waiting on this phone
   const items = new Map();
   try {
-    for (const p of ((await (await fetch('./api/photos')).json()).photos || []))
-      items.set(p.pk, { pk: p.pk, ts: p.ts, size: p.size, synced: true });
+    for (const p of ((await (await fetch('./api/photos')).json()).photos || [])) {
+      const key = p.slot ? p.pk + '#' + p.slot : p.pk;
+      items.set(key, { pk: key, ts: p.ts, size: p.size, synced: true });
+    }
   } catch (e) { /* offline — local-only view */ }
   try {
     for (const pk of await photoDB.keys()) {
@@ -694,12 +697,13 @@ async function renderQueue() {
   const from = new Date($('queue-from').value + 'T00:00:00').getTime() || 0;
   const to = (new Date($('queue-to').value + 'T00:00:00').getTime() || 8.64e15) + 86400000;
   const hideUp = $('queue-hideup').checked;
+  const basePk = k => String(k).split('#')[0];   // uploaded state is per grave
   const rows = [...items.values()]
     .filter(x => x.ts >= from && x.ts < to)
-    .filter(x => !hideUp || !progressOf(x.pk).up)
+    .filter(x => !hideUp || !progressOf(basePk(x.pk)).up)
     .sort((a, b) => b.ts - a.ts);
   const totalMB = rows.reduce((s, x) => s + (x.size || 0), 0) / 1048576;
-  const nUp = [...items.values()].filter(x => progressOf(x.pk).up).length;
+  const nUp = [...items.values()].filter(x => progressOf(basePk(x.pk)).up).length;
   summary.textContent = `${rows.length} photo${rows.length === 1 ? '' : 's'} in range (${totalMB.toFixed(1)} MB) · ${nUp} marked uploaded overall`;
   list.innerHTML = '';
   if (!rows.length) {
@@ -708,9 +712,12 @@ async function renderQueue() {
   }
   for (const x of rows) {
     const who = personByPk(x.pk);
-    const p = progressOf(x.pk);
-    const name = who ? who.name : 'Unknown (' + x.pk + ')';
-    const fname = (name.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'grave') + '_' + x.pk.replace(':', '-') + '.jpg';
+    const bpk = basePk(x.pk);
+    const p = progressOf(bpk);
+    const shot = x.pk.includes('#') ? ' · photo ' + (+x.pk.split('#')[1] + 1) : '';
+    const name = who ? who.name : 'Unknown (' + bpk + ')';
+    const fname = (name.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'grave')
+      + '_' + x.pk.replace(':', '-').replace('#', '-') + '.jpg';
     const card = document.createElement('div');
     card.className = 'tcard' + (p.up ? ' st-done' : '');
     const thumbSrc = x.synced
@@ -724,7 +731,7 @@ async function renderQueue() {
             ${p.up ? '<span class="badge stone">⬆ uploaded</span>' : '<span class="badge rust">⏳ to upload</span>'}
             ${x.synced ? '' : '<span class="badge">⌛ syncing from phone</span>'}
           </div>
-          <div class="tmeta">${who ? `<span class="lbl">${esc(who.model.cem.name)}</span> ` : ''}${who && who.plot ? esc(who.plot) + ' · ' : ''}${new Date(x.ts).toLocaleDateString()}${x.size ? ' · ' + (x.size / 1048576).toFixed(1) + ' MB' : ''}</div>
+          <div class="tmeta">${who ? `<span class="lbl">${esc(who.model.cem.name)}</span> ` : ''}${who && who.plot ? esc(who.plot) + ' · ' : ''}${new Date(x.ts).toLocaleDateString()}${x.size ? ' · ' + (x.size / 1048576).toFixed(1) + ' MB' : ''}${shot}</div>
           <div class="trow-actions" style="margin-top:5px;">
             ${x.synced ? `<a class="mini" style="text-decoration:none;" href="./api/photo/${encodeURIComponent(x.pk)}" download="${fname}">⬇ Download full-res</a>` : ''}
             ${who && who.mid ? `<a class="mini" style="text-decoration:none;" href="https://www.findagrave.com/memorial/${who.mid}" target="_blank" rel="noopener">Find a Grave ↗</a>` : ''}
@@ -733,7 +740,7 @@ async function renderQueue() {
         </div>
       </div>`;
     card.querySelector('.act-qup').addEventListener('click', () => {
-      setProgress(x.pk, { up: p.up ? 0 : Date.now(), st: progressOf(x.pk).st || 'done' });
+      setProgress(bpk, { up: p.up ? 0 : Date.now(), st: progressOf(bpk).st || 'done' });
       renderQueue();
     });
     list.appendChild(card);
@@ -1060,9 +1067,27 @@ $('guide-close').addEventListener('click', closeGuide);
 function syncGuideButtons() {
   const p = guideTarget && guideTarget.pk ? progressOf(guideTarget.pk) : {};
   const st = p.st || '';
-  $('guide-done').textContent = st === 'done' ? '✔ Photographed' : '✓ Photographed';
-  $('guide-nostone').textContent = st === 'nostone' ? '✔ No stone' : 'No stone found';
-  $('guide-notfound').textContent = st === 'notfound' ? '✔ Not found' : 'Not found';
+  const set = (id, active, label, cls) => {
+    const b = $(id);
+    b.textContent = label;
+    b.classList.toggle('marked', active);
+    b.classList.toggle(cls, active);
+  };
+  set('guide-done', st === 'done', st === 'done' ? '✔ PHOTOGRAPHED' : '✓ Photographed', 'm-done');
+  set('guide-nostone', st === 'nostone', st === 'nostone' ? '✔ NO STONE' : 'No stone found', 'm-nostone');
+  set('guide-notfound', st === 'notfound', st === 'notfound' ? '✔ NOT FOUND' : 'Not found', 'm-notfound');
+  // plain-language status banner: the outcome in words, with when it was set
+  const banner = $('guide-state');
+  const words = {
+    done: '✔ Marked photographed',
+    nostone: '✔ Marked: no stone found',
+    notfound: '✔ Marked: not found',
+  }[st];
+  banner.className = 'guide-state' + (st ? ' show s-' + st : '');
+  banner.textContent = words
+    ? words + (p.ts ? ' · ' + new Date(p.ts).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '')
+      + (st === 'done' && !p.up ? ' · still to upload' : st === 'done' && p.up ? ' · uploaded ✓' : '')
+    : '';
   // second stage of the pipeline: field photo taken -> uploaded to FAG at home
   const upBtn = $('guide-uploaded');
   upBtn.style.display = st === 'done' ? '' : 'none';
@@ -1076,46 +1101,78 @@ $('guide-uploaded').addEventListener('click', () => {
   syncGuideButtons();
   toast(was ? 'Marked not uploaded yet' : 'Marked uploaded to Find a Grave ✓');
 });
-/* attach a field photo to this grave */
+/* field photos for THIS grave — several per grave (stone, context, detail);
+   storage keys are "<pk>" for the first and "<pk>#<n>" for the rest */
+const photoKey = (pk, slot) => (slot ? pk + '#' + slot : pk);
+async function photoSlotsFor(pk) {
+  const out = [];
+  const localKeys = await photoDB.keys().catch(() => []);
+  for (let slot = 0; slot < 12; slot++) {
+    const key = photoKey(pk, slot);
+    if (localKeys.includes(key)) {
+      const rec = await photoDB.get(key);
+      if (rec && (rec.thumb || rec.blob)) out.push({ slot, key, rec });
+    }
+  }
+  return out;
+}
 async function renderGuidePhoto() {
-  const row = $('guide-photo-row'), img = $('guide-photo-thumb'), state = $('guide-photo-state');
+  const row = $('guide-photo-row');
   if (!guideTarget || !guideTarget.pk) { row.style.display = 'none'; return; }
-  const rec = await photoDB.get(guideTarget.pk).catch(() => null);
-  if (rec && (rec.thumb || rec.blob)) {
-    img.src = URL.createObjectURL(rec.thumb || rec.blob);
-    state.textContent = rec.synced ? '☁ on the Pi — in your upload queue'
-      : `⌛ queued (${rec.blob ? (rec.blob.size / 1048576).toFixed(1) + ' MB' : ''}) — syncs when there's signal`;
-    row.style.display = 'flex';
-  } else if (progressOf(guideTarget.pk).photo) {
-    // taken on another device — the Pi has it
-    img.src = './api/photo/' + encodeURIComponent(guideTarget.pk) + '?thumb=1&t=' + Date.now();
-    img.onerror = () => { row.style.display = 'none'; };
-    state.textContent = '☁ on the Pi';
-    row.style.display = 'flex';
-  } else row.style.display = 'none';
+  const pk = guideTarget.pk;
+  const local = await photoSlotsFor(pk);
+  const localSlots = new Set(local.map(l => l.slot));
+  // slots that live only on the Pi (taken on another device)
+  const serverSlots = [];
+  const prog = progressOf(pk);
+  for (let slot = 0; slot < (prog.photo || 0); slot++) if (!localSlots.has(slot)) serverSlots.push(slot);
+  if (!local.length && !serverSlots.length) { row.style.display = 'none'; row.innerHTML = ''; return; }
+  row.innerHTML = '';
+  const add = (src, label, key) => {
+    const d = document.createElement('div');
+    d.className = 'photo-thumb';
+    d.innerHTML = `<img src="${src}" alt="grave photo"><div class="st">${label}</div><div class="badge-x" title="remove">✕</div>`;
+    d.querySelector('.badge-x').addEventListener('click', async () => {
+      if (!confirm('Remove this photo?')) return;
+      await photoDB.del(key).catch(() => {});
+      fetch('./api/photo/' + encodeURIComponent(key), { method: 'DELETE' }).catch(() => {});
+      const n = (progressOf(pk).photo || 1) - 1;
+      setProgress(pk, { photo: n > 0 ? n : 0 });
+      renderGuidePhoto();
+    });
+    row.appendChild(d);
+  };
+  for (const l of local) add(URL.createObjectURL(l.rec.thumb || l.rec.blob), l.rec.synced ? '☁ on Pi' : '⌛ queued', l.key);
+  for (const slot of serverSlots) {
+    const key = photoKey(pk, slot);
+    add('./api/photo/' + encodeURIComponent(key) + '?thumb=1&t=' + Date.now(), '☁ on Pi', key);
+  }
+  row.style.display = 'flex';
 }
 $('guide-photo').addEventListener('click', () => $('guide-photo-input').click());
 $('guide-photo-input').addEventListener('change', async () => {
-  const f = $('guide-photo-input').files[0];
+  const files = [...$('guide-photo-input').files];
   $('guide-photo-input').value = '';
-  if (!f || !guideTarget || !guideTarget.pk) return;
-  try {
-    // full resolution queues for the Pi; a small thumb renders lists fast.
-    // iOS/Android hand file inputs a JPEG; anything else gets re-encoded.
-    const blob = /jpe?g$/i.test(f.type) || f.type === '' ? f : await shrinkPhoto(f, 99999, 0.95);
-    const thumb = await shrinkPhoto(f, 480, 0.75);
-    await photoDB.put(guideTarget.pk, { blob, thumb, ts: Date.now(), synced: false });
-    setProgress(guideTarget.pk, { photo: 1 });   // flag rides along in progress sync
-    renderGuidePhoto();
-    toast(`Full-quality photo queued (${(blob.size / 1048576).toFixed(1)} MB) — it syncs to the Pi and appears in the Queue tab`);
-    syncPhotos();
-  } catch (e) { toast('Could not read that photo'); }
-});
-$('guide-photo-del').addEventListener('click', async () => {
-  if (!guideTarget || !guideTarget.pk) return;
-  await photoDB.del(guideTarget.pk).catch(() => {});
-  setProgress(guideTarget.pk, { photo: 0 });
+  if (!files.length || !guideTarget || !guideTarget.pk) return;
+  const pk = guideTarget.pk;
+  let slot = (progressOf(pk).photo || 0);
+  let added = 0, mb = 0;
+  for (const f of files) {
+    try {
+      // full resolution queues for the Pi; a small thumb renders lists fast.
+      // iOS/Android hand file inputs a JPEG; anything else gets re-encoded.
+      const blob = /jpe?g$/i.test(f.type) || f.type === '' ? f : await shrinkPhoto(f, 99999, 0.95);
+      const thumb = await shrinkPhoto(f, 480, 0.75);
+      await photoDB.put(photoKey(pk, slot), { blob, thumb, ts: Date.now(), synced: false });
+      slot++; added++; mb += blob.size / 1048576;
+    } catch (e) { /* skip unreadable file */ }
+  }
+  if (!added) { toast('Could not read that photo'); return; }
+  setProgress(pk, { photo: slot });          // count rides along in progress sync
+  if (navigator.vibrate) navigator.vibrate(18);
   renderGuidePhoto();
+  toast(`📷 ${added} photo${added > 1 ? 's' : ''} added to ${guideTarget.name} (${mb.toFixed(1)} MB) — syncing to the Pi, then the Queue tab`, 4000);
+  syncPhotos();
 });
 function guideSetState(v, extraTip) {
   if (!guideTarget || !guideTarget.pk) return;
@@ -1124,8 +1181,25 @@ function guideSetState(v, extraTip) {
   setProgress(guideTarget.pk, { st: next });
   syncGuideButtons();
   const label = { done: 'Photographed ✓', nostone: 'No stone found', notfound: 'Not found' }[v];
-  if (!next) toast('Reopened');
-  else toast('Marked: ' + label + (extraTip ? ' — ' + extraTip : ''), extraTip ? 4200 : 2600);
+  // three confirmations at once: the button pulses, the panel flashes the
+  // outcome colour, and the phone buzzes — no doubt it registered
+  const btn = { done: 'guide-done', nostone: 'guide-nostone', notfound: 'guide-notfound' }[v];
+  if (btn) {
+    const b = $(btn);
+    b.classList.remove('justmarked');
+    void b.offsetWidth;               // restart the animation
+    b.classList.add('justmarked');
+  }
+  const panel = $('guide');
+  panel.classList.remove('flash-done', 'flash-nostone', 'flash-notfound');
+  if (next) {
+    void panel.offsetWidth;
+    panel.classList.add('flash-' + v);
+    setTimeout(() => panel.classList.remove('flash-' + v), 600);
+  }
+  if (navigator.vibrate) navigator.vibrate(next ? [18, 40, 18] : 12);
+  if (!next) toast('Reopened — no outcome set');
+  else toast('✔ ' + label + (extraTip ? ' — ' + extraTip : ''), extraTip ? 4200 : 2600);
 }
 $('guide-done').addEventListener('click', () => guideSetState('done'));
 $('guide-nostone').addEventListener('click', () => guideSetState('nostone', 'photograph the spot in context and flag the request on Find a Grave'));

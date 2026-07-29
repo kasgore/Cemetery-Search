@@ -125,11 +125,20 @@ def post_progress():
 # progress ("<memorialId>" or "ros:<key>"). Stored in the data volume, so
 # they survive image rebuilds like everything else.
 def _photo_path(pk, thumb=False):
-    if not re.fullmatch(r"\d+|ros:\w+", pk):   # the only pk shapes the app makes
+    # pk is "<memorialId>" or "ros:<key>", optionally with a photo slot
+    # suffix "#<n>" so one grave can hold several shots (stone, context,
+    # inscription detail — all useful to the family)
+    slot = ""
+    if "#" in pk:
+        pk, _, slot = pk.partition("#")
+        if not re.fullmatch(r"\d{1,3}", slot):
+            return None
+        slot = "" if slot == "0" else "-" + slot
+    if not re.fullmatch(r"\d+|ros:\w+", pk):
         return None
     d = os.path.join(DATA_DIR, "photos")
     os.makedirs(d, exist_ok=True)
-    return os.path.join(d, pk.replace(":", "_") + (".thumb.jpg" if thumb else ".jpg"))
+    return os.path.join(d, pk.replace(":", "_") + slot + (".thumb.jpg" if thumb else ".jpg"))
 
 
 @app.get("/api/photos")
@@ -141,8 +150,14 @@ def list_photos():
             if not f.endswith(".jpg") or f.endswith(".thumb.jpg"):
                 continue
             st = os.stat(os.path.join(d, f))
+            name = f[:-4]
+            slot = 0
+            m = re.search(r"-(\d{1,3})$", name)
+            if m:
+                name, slot = name[: m.start()], int(m.group(1))
             out.append({
-                "pk": f[:-4].replace("ros_", "ros:", 1),
+                "pk": name.replace("ros_", "ros:", 1),
+                "slot": slot,
                 "ts": int(st.st_mtime * 1000),
                 "size": st.st_size,
             })
@@ -159,6 +174,17 @@ def get_photo(pk):
     if not p or not os.path.exists(p):
         return jsonify({"error": "not found"}), 404
     return send_from_directory(os.path.dirname(p), os.path.basename(p), max_age=0)
+
+
+@app.delete("/api/photo/<pk>")
+def delete_photo(pk):
+    removed = 0
+    for thumb in (False, True):
+        p = _photo_path(pk, thumb=thumb)
+        if p and os.path.exists(p):
+            os.remove(p)
+            removed += 1
+    return jsonify({"ok": True, "removed": removed})
 
 
 @app.post("/api/photo/<pk>")
