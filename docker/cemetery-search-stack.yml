@@ -1,39 +1,44 @@
 # Cemetery Search — Portainer stack (upload this file, or paste it in the web editor).
 #
-# ONE address that works everywhere, including cellular:
-#     https://rpidocker.tail85744b.ts.net:8443/
-#     (or https://100.70.196.66:8443/ )
+# Runs on the LAN at 192.168.5.14 (macvlan), the same way the container at
+# .7 does, on the standard ports:
+#     https://192.168.5.14/     (use https — GPS/compass need a secure page)
 #
-# Why no macvlan any more: a macvlan container gets its own LAN IP but is
-# invisible to its own host, and Tailscale runs ON the host — so it could
-# never forward to 192.168.5.14. That is exactly why photos and map tiles
-# only moved once Wi-Fi came on. Publishing ports on the host instead means
-# Tailscale serves the app from anywhere, and the home LAN can still reach
-# it at the Pi's own address on the same ports.
+# Off-network access is via Tailscale subnet routing to that same address.
+# That works only because the Pi has a macvlan shim giving the host a path
+# to its own macvlan containers (a macvlan container is otherwise invisible
+# to its own host, and Tailscale runs on the host). The shim already has:
+#     192.168.5.14 dev mac-shim scope link
 #
-# Use that one URL on the phone AND the PC: browser storage is per-address,
-# so sticking to a single URL keeps one set of marks and photos on each
-# device (they sync through the Pi either way).
-#
-# Accept the self-signed certificate warning once per device; the cert
-# covers the names in CERT_HOSTS below.
+# After deploying, confirm the shim path is live — ON THE PI:
+#     curl -sk -o /dev/null -w '%{http_code}\n' https://192.168.5.14/
+# 200 = the host can reach the container, so Tailscale can forward to it
+# too. 000 = the shim isn't carrying this address; compare with .7:
+#     ip neigh show | grep -E '192\.168\.5\.(7|14)'
+# (.7 resolving while .14 shows FAILED means the container isn't answering
+# ARP on the shim's segment — check the container is really on
+# InternalNetwork, whose parent is eth0, the same parent as mac-shim.)
 services:
   cemetery-search:
     image: cemetery-search:latest
     container_name: cemetery-search
     restart: unless-stopped
-    ports:
-      - "8420:80"     # http
-      - "8443:443"    # https — use this one (GPS/compass need a secure page)
     environment:
-      PORT: "80"
+      PORT: "80"                  # macvlan: the app listens on the real ports
       HTTPS_PORT: "443"
       REFRESH_HOURS: "6"
       RADIUS_MILES: "15"
-      CERT_HOSTS: "rpidocker.tail85744b.ts.net,100.70.196.66,192.168.5.14,localhost"
+      CERT_HOSTS: "192.168.5.14,localhost,100.70.196.66,rpidocker.tail85744b.ts.net"
       TZ: "America/New_York"
     volumes:
-      - cemetery_data:/data   # keeps your field log, photos and caches across rebuilds
+      - cemetery_data:/data       # field log, photos and caches survive rebuilds
+    networks:
+      InternalNetwork:
+        ipv4_address: 192.168.5.14
 
 volumes:
   cemetery_data:
+
+networks:
+  InternalNetwork:
+    external: true                # the existing macvlan (parent eth0)
