@@ -70,6 +70,15 @@
   }
   #gps-chip.on { border-color: var(--moss); color: var(--moss-dark); background: rgba(74,93,58,0.1); }
   #gps-chip.err { border-color: var(--rust); color: var(--rust); }
+  /* connection to the Pi — silence here used to hide a whole class of
+     "why didn't my photos upload" problems in the field */
+  #link-chip {
+    display: none; font-family: var(--font-mono); font-size: 0.6rem; margin-left: 5px;
+    padding: 2px 8px; border: 1px solid var(--stone-light); border-radius: 10px; color: var(--stone);
+  }
+  #link-chip.show { display: inline-block; }
+  #link-chip.ok { border-color: var(--moss); color: var(--moss-dark); background: rgba(74,93,58,0.1); }
+  #link-chip.off { border-color: var(--rust); color: var(--rust); background: rgba(139,58,31,0.08); }
 
   /* Tabs */
   nav.tabs {
@@ -314,7 +323,8 @@
       <select id="cem-select" style="margin-top:2px; max-width:min(78vw,430px); font-family:var(--font-mono); font-size:0.72rem; padding:6px 8px; background:var(--bg); border:1px solid var(--stone-light); color:var(--ink);"></select>
     </div>
     <div class="head-stats">
-      <span id="gps-chip" title="Tap to toggle GPS">GPS off</span><br>
+      <span id="gps-chip" title="Tap to toggle GPS">GPS off</span>
+      <span id="link-chip" title="Connection to the Pi"></span><br>
       <strong id="stat-open">0</strong> to find &middot; <strong id="stat-done">0</strong> done
     </div>
   </div>

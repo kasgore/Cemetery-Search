@@ -86,6 +86,32 @@ if (store.updates && (store.updates.requests || store.updates.memorials || store
    hosting (no /api) the fetch just fails and everything stays local-only. */
 let syncTimer = null;
 function scheduleProgressSync() { clearTimeout(syncTimer); syncTimer = setTimeout(syncProgress, 4000); }
+/* connection chip: says plainly whether the Pi is reachable and how much
+   work is waiting, so "it didn't upload" is never a silent failure */
+let linkOk = null;
+async function updateLinkChip() {
+  const el = document.getElementById('link-chip');
+  if (!el) return;
+  let queued = 0;
+  try {
+    for (const pk of await photoDB.keys()) {
+      const rec = await photoDB.get(pk);
+      if (rec && !rec.synced) queued++;
+    }
+  } catch (e) { /* ignore */ }
+  if (linkOk === false) {
+    el.className = 'show off';
+    el.textContent = queued ? `⚠ no server · ${queued} photo${queued > 1 ? 's' : ''} waiting` : '⚠ no server link';
+    el.title = 'The app can\'t reach the Pi right now. Marks and photos are saved on this device and will sync automatically when it can.';
+  } else if (queued) {
+    el.className = 'show ok';
+    el.textContent = `⇅ ${queued} photo${queued > 1 ? 's' : ''} syncing`;
+    el.title = 'Photos are uploading to the Pi.';
+  } else {
+    el.className = '';
+    el.textContent = '';
+  }
+}
 async function syncProgress() {
   const el = document.getElementById('sync-status');
   try {
@@ -116,9 +142,12 @@ async function syncProgress() {
     }
     const n = Object.values(store.progress).filter(p => p.st || p.note || p.gps || p.photo || p.up).length;
     if (el) el.textContent = `☁ field log synced with the Pi — ${n} entr${n === 1 ? 'y' : 'ies'}`;
+    linkOk = true;
   } catch (e) {
-    if (el) el.textContent = '';
+    linkOk = false;
+    if (el) el.textContent = '⚠ can\'t reach the Pi — everything is saved on this device and will sync when the link is back';
   }
+  updateLinkChip();
 }
 setTimeout(syncProgress, 2500);        // boot: pull the server copy and merge
 setInterval(syncProgress, 60000);      // steady heartbeat — phone and PC converge within a minute
@@ -215,6 +244,7 @@ async function syncPhotos() {
     }
   } catch (e) { /* IndexedDB unavailable — nothing to do */ }
   photoSyncBusy = false;
+  updateLinkChip();
   if (pending) setTimeout(syncPhotos, 60000);   // keep nudging till it's all up
 }
 setTimeout(syncPhotos, 3500);
