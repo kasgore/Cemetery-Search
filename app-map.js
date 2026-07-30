@@ -273,7 +273,7 @@ MapView.prototype.draw = function () {
   const graveLabels = [];
   const anchorPts = [];
   if (s > 0.7 && L.graves.length) {
-    const showNames = s > 4;
+    const showNames = s > 6.5;
     for (const pt of L.graves) {
       const p = this.llToScreen(pt.lat, pt.lng);
       if (!inView(p)) continue;
@@ -320,7 +320,7 @@ MapView.prototype.draw = function () {
         ctx.fillStyle = occupied ? 'rgba(122,101,62,0.9)' : 'rgba(148,138,118,0.6)';
         ctx.fillRect(p.x - r, p.y - r, r * 2, r * 2);
       }
-      if (showNums && pt.label) lotLabels.push([pt.label, p.x + 3, p.y + 3]);
+      if (showNums && pt.label) lotLabels.push([pt.label, p.x + 3, p.y + 3, occupied]);
     }
   }
   // roads (plat-map road markers, redundant over photography)
@@ -345,18 +345,25 @@ MapView.prototype.draw = function () {
   }
   // lot numbers before surnames: plat navigation beats name browsing when
   // both want the same pixels
+  // Lot numbers. A BLUE number means we know who is buried there and it can
+  // be tapped for the names; a muted grey one is an empty square of the grid.
   if (lotLabels.length) {
-    const fh = Math.min(12, Math.max(9, s * 2.2));
-    ctx.font = fh + 'px JetBrains Mono, monospace';
-    for (const [txt, x, y] of lotLabels) {
+    const fh = Math.min(13, Math.max(9.5, s * 2.2));
+    for (const [txt, x, y, occupied] of lotLabels) {
+      ctx.font = (occupied ? 'bold ' : '') + fh + 'px JetBrains Mono, monospace';
       if (!tryLabel(txt, x, y, fh)) continue;
       halo(txt, x, y);
-      ctx.fillStyle = onImg ? 'rgba(20,24,15,0.95)' : 'rgba(80,72,58,0.9)';
+      ctx.fillStyle = occupied
+        ? (onImg ? '#7fc4ec' : '#1d557a')
+        : (onImg ? 'rgba(255,253,247,0.75)' : 'rgba(120,110,94,0.6)');
       ctx.fillText(txt, x, y);
     }
   }
-  if (graveLabels.length) {
-    const fh = Math.min(12.5, Math.max(9.5, s * 2));
+  // Surnames on every grave dot turned the map to mush at working zoom —
+  // the names are one tap away now, so they only appear when you're right
+  // on top of a row.
+  if (graveLabels.length && s > 6.5) {
+    const fh = Math.min(12.5, Math.max(9.5, s * 1.6));
     ctx.font = fh + 'px JetBrains Mono, monospace';
     for (const [txt, x, y] of graveLabels) {
       if (!tryLabel(txt, x, y, fh)) continue;
