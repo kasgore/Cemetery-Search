@@ -397,6 +397,7 @@ CS.buildModel = function (data, updates) {
     });
   }
 
+  dropOutOfBounds(model, data.grounds);   // before anything consumes the maps
   buildPlotIndex(model);
   buildAnchorIndex(model);
   matchRosterToMemorials(model);
@@ -582,6 +583,54 @@ function buildPlotIndex(model) {
     if (!r.section) continue;
     add({ section: r.section, sub: r.sub, block: r.block, lot: r.lot, grave: r.grave }, r);
   }
+}
+
+/* A drawn lot outside the cemetery grounds is wrong by definition — a plat
+   fit extrapolated past its evidence. Rather than send someone into the
+   trees, drop those entries at model build. The margin is generous because
+   OSM boundaries are rough: only clearly-outside positions go. */
+const BOUNDS_MARGIN_M = 25;
+function distToPolyM(lat, lng, poly, proj) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [yi, xi] = poly[i], [yj, xj] = poly[j];
+    if ((xi > lng) !== (xj > lng) && lat < (yj - yi) * (lng - xi) / (xj - xi) + yi) inside = !inside;
+  }
+  if (inside) return 0;
+  const p = proj.toEN(lat, lng);
+  let best = Infinity;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = proj.toEN(poly[j][0], poly[j][1]);
+    const b = proj.toEN(poly[i][0], poly[i][1]);
+    const vx = b.e - a.e, vy = b.n - a.n;
+    const len2 = vx * vx + vy * vy || 1;
+    let t = ((p.e - a.e) * vx + (p.n - a.n) * vy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    const d = Math.hypot(p.e - (a.e + t * vx), p.n - (a.n + t * vy));
+    if (d < best) best = d;
+  }
+  return best;
+}
+function dropOutOfBounds(model, grounds) {
+  const polys = (grounds && grounds.bounds) || [];
+  if (!polys.length) return;
+  let dropped = 0;
+  for (const m of model.maps) {
+    if (!m.transform || !m.entries || !m.entries.length) continue;
+    m.entries = m.entries.filter(e => {
+      const w = applyT(m.transform, e[2], e[3]);
+      const ll = model.proj.toLL(w.e, w.n);
+      if (!isFinite(ll.lat)) return false;
+      let dmin = Infinity;
+      for (const poly of polys) {
+        dmin = Math.min(dmin, distToPolyM(ll.lat, ll.lng, poly, model.proj));
+        if (dmin <= BOUNDS_MARGIN_M) return true;
+      }
+      dropped++;
+      return false;
+    });
+  }
+  model.outOfBounds = dropped;
 }
 
 /* Everyone recorded in one drawn lot — memorials and register rows, deduped
