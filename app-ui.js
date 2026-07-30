@@ -103,6 +103,12 @@ async function updateLinkChip() {
     el.className = 'show off';
     el.textContent = queued ? `⚠ no server · ${queued} photo${queued > 1 ? 's' : ''} waiting` : '⚠ no server link';
     el.title = 'The app can\'t reach the Pi right now. Marks and photos are saved on this device and will sync automatically when it can.';
+  } else if (photoFailures && queued) {
+    // the server is reachable but refusing the upload — say so, because a
+    // silent retry loop is how a photo goes missing without anyone noticing
+    el.className = 'show off';
+    el.textContent = `⚠ ${queued} photo${queued > 1 ? 's' : ''} rejected — still on this device`;
+    el.title = 'The Pi refused these uploads. They are safe here; tell Claude so the cause can be fixed.';
   } else if (queued) {
     el.className = 'show ok';
     el.textContent = `⇅ ${queued} photo${queued > 1 ? 's' : ''} syncing`;
@@ -215,10 +221,22 @@ function shrinkPhoto(file, maxDim, quality) {
     img.src = URL.createObjectURL(file);
   });
 }
+// Trust the BYTES, not the file's declared type. iPhones shoot HEIC and iOS
+// file inputs sometimes report an empty MIME type, so a "looks like a photo"
+// check would hand the server a HEIC it must reject — and the upload would
+// retry forever in silence. Anything that isn't a real JPEG gets re-encoded.
+async function ensureJpeg(blob) {
+  try {
+    const head = new Uint8Array(await blob.slice(0, 3).arrayBuffer());
+    if (head[0] === 0xFF && head[1] === 0xD8) return blob;      // already JPEG
+  } catch (e) { /* fall through to re-encode */ }
+  return shrinkPhoto(blob, 4000, 0.92);
+}
 // sync loop built for intermittent cell service: full-res photos wait in
 // IndexedDB across restarts, a retry timer + the 'online' event keep nudging,
 // and after a confirmed upload the phone keeps only the thumbnail
 let photoSyncBusy = false;
+let photoFailures = 0;
 async function syncPhotos() {
   if (photoSyncBusy) return;
   photoSyncBusy = true;
@@ -228,10 +246,18 @@ async function syncPhotos() {
       const rec = await photoDB.get(pk);
       if (!rec || rec.synced) continue;
       try {
+        // a queued blob may predate the JPEG check (HEIC from an older
+        // build) — convert on the way out rather than retrying forever
+        const body = await ensureJpeg(rec.blob);
         const res = await fetch('./api/photo/' + encodeURIComponent(pk), {
-          method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: rec.blob,
+          method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body,
         });
-        if (!res.ok) { pending++; continue; }
+        if (!res.ok) {
+          pending++;
+          if (res.status >= 400 && res.status < 500) photoFailures++;   // server refused it
+          continue;
+        }
+        photoFailures = 0;
         // the server may have moved this shot to a free slot (another device
         // already used ours) — put the thumbnail with wherever it landed
         let serverKey = pk;
@@ -1199,9 +1225,8 @@ $('guide-photo-input').addEventListener('change', async () => {
   let added = 0, mb = 0;
   for (const f of files) {
     try {
-      // full resolution queues for the Pi; a small thumb renders lists fast.
-      // iOS/Android hand file inputs a JPEG; anything else gets re-encoded.
-      const blob = /jpe?g$/i.test(f.type) || f.type === '' ? f : await shrinkPhoto(f, 99999, 0.95);
+      // full resolution queues for the Pi; a small thumb renders lists fast
+      const blob = await ensureJpeg(f);
       const thumb = await shrinkPhoto(f, 480, 0.75);
       await photoDB.put(photoKey(pk, slot), { blob, thumb, ts: Date.now(), synced: false });
       slot++; added++; mb += blob.size / 1048576;
