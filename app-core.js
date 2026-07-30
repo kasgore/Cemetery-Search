@@ -584,6 +584,28 @@ function buildPlotIndex(model) {
   }
 }
 
+/* Everyone recorded in one drawn lot — memorials and register rows, deduped
+   where they're the same person. Lets the map answer "who is buried here?"
+   for any lot number you can see. */
+CS.lotOccupants = function (model, section, sub, block, lot) {
+  if (!section) return [];
+  const all = model.plotIndex.get(plotKey(section, sub, block)) || [];
+  const want = String(parseInt(lot));
+  const out = [];
+  const seen = new Set();
+  for (const { p: q, who } of all) {
+    if (String(parseInt(q.lot)) !== want) continue;
+    if (block && q.block && normBlock(q.block) !== normBlock(block)) continue;
+    if (who.kind === 'ros' && who.mem) continue;            // shown via the memorial
+    const key = who.kind === 'mem' ? 'm' + who.mid : 'r' + who.key;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ who, grave: q.grave || '' });
+  }
+  out.sort((a, b) => (parseInt(a.grave) || 99) - (parseInt(b.grave) || 99));
+  return out;
+};
+
 /* roster <-> memorial matching */
 function matchRosterToMemorials(model) {
   const byLast = new Map();

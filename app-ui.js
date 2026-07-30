@@ -1425,7 +1425,15 @@ function modelLayerCache(model) {
     for (const en of m.entries) {
       const w = CS.applyT(m.transform, en[2], en[3]);
       const ll = model.proj.toLL(w.e, w.n);
-      if (isFinite(ll.lat)) lots.push({ lat: ll.lat, lng: ll.lng, label: String(en[1]) });
+      if (!isFinite(ll.lat)) continue;
+      // who is recorded in this lot? a lot with names behind it is worth
+      // tapping; an empty one is just grid furniture
+      const occ = CS.lotOccupants(model, m.section, m.sub, en[0], en[1]);
+      lots.push({
+        lat: ll.lat, lng: ll.lng, label: String(en[1]),
+        n: occ.length, occ, model,
+        section: m.section, sub: m.sub, block: en[0], lot: String(en[1]),
+      });
     }
     for (const b of (m.blocks || [])) {
       const w = CS.applyT(m.transform, b.x, b.y);
@@ -1483,6 +1491,60 @@ function buildLayers(cemIds, soloTarget) {
   return L;
 }
 
+/* tapping a lot number: who is recorded in this lot? */
+function openLotSheet(lot) {
+  const model = lot.model;
+  const where = [lot.section === '*' ? '' : lot.section + (lot.sub ? ' Sub ' + lot.sub : ''),
+    lot.block ? 'Blk ' + lot.block : '', 'Lot ' + lot.lot].filter(Boolean).join(' ');
+  const rows = lot.occ.map(o => {
+    const w = o.who;
+    const isMem = w.kind === 'mem';
+    const years = CS.yearsOf(w);
+    const badges = [
+      o.grave ? `<span class="badge">grave ${esc(o.grave)}</span>` : '',
+      isMem && w.hasGravePhoto ? '<span title="stone photographed">📷</span>' : '',
+      isMem && w.hasRequest ? '<span class="badge rust">photo requested</span>' : '',
+      !isMem ? '<span class="badge stone">register</span>' : '',
+      w.veteran ? '<span class="badge stone">vet</span>' : '',
+    ].filter(Boolean).join(' ');
+    return `<div class="nb" data-mid="${isMem ? w.mid : (w.mem ? w.mem.mid : '')}" data-ros="${isMem ? '' : w.key}">
+      <a href="#" class="act-lot-guide">${esc(w.name)}</a>
+      <span class="g">${esc(years)}</span> ${badges}
+    </div>`;
+  }).join('');
+  const sheet = $('lot-sheet');
+  sheet.innerHTML = `<div class="card" style="margin:0;">
+      <div class="tname">${esc(model.cem.name)} · ${esc(where)}
+        <button class="mini" id="lot-close" style="float:right;">✕</button></div>
+      <div class="tmeta">${lot.occ.length} recorded here — tap a name to navigate</div>
+      ${rows}
+    </div>`;
+  sheet.style.display = 'block';
+  $('lot-close').addEventListener('click', () => { sheet.style.display = 'none'; });
+  for (const el of sheet.querySelectorAll('.act-lot-guide')) {
+    el.addEventListener('click', ev => {
+      ev.preventDefault();
+      const d = el.closest('.nb').dataset;
+      const mem = d.mid ? model.memById.get(+d.mid) : null;
+      const ros = d.ros ? model.roster.find(r => String(r.key) === d.ros) : null;
+      const person = mem || ros;
+      if (!person) return;
+      const p = mem ? mem.p : { section: ros.section, sub: ros.sub, block: ros.block, lot: ros.lot, grave: ros.grave };
+      const loc = (mem && mem.lat != null)
+        ? { lat: mem.lat, lng: mem.lng, acc: 8, level: 'gps' }
+        : CS.locate(model, p) || { lat: lot.lat, lng: lot.lng, acc: 12, level: 'lot' };
+      sheet.style.display = 'none';
+      openGuide({
+        name: person.name, ln: person.last || '', by: person.by || null, dy: person.dy || null,
+        mid: mem ? mem.mid : (ros && ros.mem ? ros.mem.mid : null),
+        rosKey: ros ? ros.key : null,
+        loc, pBest: p && p.section ? p : null, pRos: ros ? p : null,
+        plot: mem ? mem.plot : '',
+      }, model);
+    });
+  }
+}
+
 /* ---------------- main map ---------------- */
 let mainMap = null;
 function imageryPref() { return store.prefs.imagery !== false; }
@@ -1506,6 +1568,7 @@ function ensureMap() {
         }, hit.model);
         return;
       }
+      if (hit && hit.occ && hit.model) { openLotSheet(hit); return; }
       if (hit && hit.reg && hit.model) {
         // register dot: open the guide on the roster burial at its located spot
         const r = hit.model.roster.find(x => x.key === hit.rosKey);

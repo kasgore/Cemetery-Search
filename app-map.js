@@ -271,6 +271,7 @@ MapView.prototype.draw = function () {
   // stone you can navigate by. Dots first; labels later so lot numbers get
   // collision priority over surnames.
   const graveLabels = [];
+  const anchorPts = [];
   if (s > 0.7 && L.graves.length) {
     const showNames = s > 4;
     for (const pt of L.graves) {
@@ -278,17 +279,7 @@ MapView.prototype.draw = function () {
       if (!inView(p)) continue;
       ctx.lineWidth = 1.2;
       if (pt.pin) {
-        // field-confirmed (you stood there and saved GPS) — blue diamond,
-        // white-rimmed, unmistakable on any background
-        ctx.beginPath();
-        ctx.moveTo(p.x, p.y - 4.2); ctx.lineTo(p.x + 4.2, p.y);
-        ctx.lineTo(p.x, p.y + 4.2); ctx.lineTo(p.x - 4.2, p.y);
-        ctx.closePath();
-        ctx.fillStyle = '#2b5c7a';
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
-        ctx.lineWidth = 1.6;
-        ctx.stroke();
+        anchorPts.push([pt, p]);   // drawn last, on top of everything
       } else if (pt.reg) {
         // register burial at a located position — hollow square, so the eye
         // can tell "the book says here" from "a photo was taken here"
@@ -316,14 +307,18 @@ MapView.prototype.draw = function () {
     for (const pt of L.lots) {
       const p = this.llToScreen(pt.lat, pt.lng);
       if (!inView(p)) continue;
+      // a lot with names recorded in it is a thing you can tap — draw it
+      // bigger and solid so the eye (and the finger) can find it
+      const occupied = pt.n > 0;
+      const r = occupied ? 3.2 : 1.6;
       if (onImg) { // white pip with dark rim reads on any photo
         ctx.fillStyle = 'rgba(20,24,15,0.9)';
-        ctx.fillRect(p.x - 1.9, p.y - 1.9, 3.8, 3.8);
-        ctx.fillStyle = 'rgba(255,253,247,0.95)';
-        ctx.fillRect(p.x - 1.1, p.y - 1.1, 2.2, 2.2);
+        ctx.fillRect(p.x - r - 0.8, p.y - r - 0.8, (r + 0.8) * 2, (r + 0.8) * 2);
+        ctx.fillStyle = occupied ? 'rgba(255,253,247,0.98)' : 'rgba(255,253,247,0.8)';
+        ctx.fillRect(p.x - r, p.y - r, r * 2, r * 2);
       } else {
-        ctx.fillStyle = 'rgba(148,138,118,0.75)';
-        ctx.fillRect(p.x - 1.2, p.y - 1.2, 2.4, 2.4);
+        ctx.fillStyle = occupied ? 'rgba(122,101,62,0.9)' : 'rgba(148,138,118,0.6)';
+        ctx.fillRect(p.x - r, p.y - r, r * 2, r * 2);
       }
       if (showNums && pt.label) lotLabels.push([pt.label, p.x + 3, p.y + 3]);
     }
@@ -394,6 +389,34 @@ MapView.prototype.draw = function () {
     ctx.beginPath();
     ctx.arc(p.x, p.y, 2.6, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  // field-confirmed anchors last and largest: these are the positions you
+  // proved by standing on them, so nothing on the map should outrank them
+  for (const [pt, p] of anchorPts) {
+    const R = 7;
+    ctx.beginPath();                       // soft halo so it separates from any background
+    ctx.arc(p.x, p.y, R + 4, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(43,92,122,0.20)';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y - R); ctx.lineTo(p.x + R, p.y);
+    ctx.lineTo(p.x, p.y + R); ctx.lineTo(p.x - R, p.y);
+    ctx.closePath();
+    ctx.fillStyle = '#2b5c7a';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.98)';
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(20,24,15,0.55)';
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+    if (s > 1.2 && pt.label) {             // named much earlier than ordinary dots
+      ctx.font = 'bold 11px JetBrains Mono, monospace';
+      halo(pt.label, p.x + R + 4, p.y + 4);
+      ctx.fillStyle = onImg ? 'rgba(20,24,15,0.95)' : 'rgba(30,60,80,0.95)';
+      ctx.fillText(pt.label, p.x + R + 4, p.y + 4);
+    }
   }
 
   // scale bar (feet/miles) — bottom-left, sized to a round number
@@ -566,13 +589,27 @@ MapView.prototype.hitTest = function (x, y, radius) {
     if (d < bestD) { bestD = d; best = t; }
   }
   if (best) return best;
-  // grave dots are tappable too, but only while they're drawn (zoomed in)
+  // grave dots are tappable too, but only while they're drawn (zoomed in).
+  // Radii are finger-sized, not pixel-sized: a gloved tap in the cold should
+  // still land. Confirmed anchors win ties, then graves, then lots.
   if (this.scale > 0.7) {
-    let bd = 12;
+    let bd = 20;
     for (const g of this.layers.graves) {
       const p = this.llToScreen(g.lat, g.lng);
-      const d = Math.hypot(p.x - x, p.y - y);
+      let d = Math.hypot(p.x - x, p.y - y);
+      if (g.pin) d -= 6;                       // anchors are the surest thing here
       if (d < bd) { bd = d; best = g; }
+    }
+  }
+  if (best) return best;
+  // lot numbers: tappable when they have someone recorded in them
+  if (this.scale > 0.55) {
+    let bd = 18;
+    for (const l of this.layers.lots) {
+      if (!l.n) continue;                      // empty grid square — nothing to show
+      const p = this.llToScreen(l.lat, l.lng);
+      const d = Math.hypot(p.x - x, p.y - y);
+      if (d < bd) { bd = d; best = l; }
     }
   }
   return best;
