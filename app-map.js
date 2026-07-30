@@ -270,10 +270,8 @@ MapView.prototype.draw = function () {
   // Solid dot = stone photographed, ring = not — in the field a solid dot is a
   // stone you can navigate by. Dots first; labels later so lot numbers get
   // collision priority over surnames.
-  const graveLabels = [];
   const anchorPts = [];
   if (s > 0.7 && L.graves.length) {
-    const showNames = s > 6.5;
     for (const pt of L.graves) {
       const p = this.llToScreen(pt.lat, pt.lng);
       if (!inView(p)) continue;
@@ -297,7 +295,6 @@ MapView.prototype.draw = function () {
           ctx.stroke();
         }
       }
-      if (showNames && pt.label) graveLabels.push([pt.label, p.x + 4, p.y - 3]);
     }
   }
   // lot grid
@@ -359,19 +356,8 @@ MapView.prototype.draw = function () {
       ctx.fillText(txt, x, y);
     }
   }
-  // Surnames on every grave dot turned the map to mush at working zoom —
-  // the names are one tap away now, so they only appear when you're right
-  // on top of a row.
-  if (graveLabels.length && s > 6.5) {
-    const fh = Math.min(12.5, Math.max(9.5, s * 1.6));
-    ctx.font = fh + 'px JetBrains Mono, monospace';
-    for (const [txt, x, y] of graveLabels) {
-      if (!tryLabel(txt, x, y, fh)) continue;
-      halo(txt, x, y);
-      ctx.fillStyle = onImg ? 'rgba(20,24,15,0.95)' : 'rgba(60,72,48,0.9)';
-      ctx.fillText(txt, x, y);
-    }
-  }
+  // No surnames on grave dots at any zoom: they smothered the lot numbers,
+  // which are what you actually navigate by. Tap a number for the names.
   // section names
   ctx.font = 'italic 600 ' + Math.min(17, Math.max(11, s * 9)) + 'px Cormorant Garamond, serif';
   if (s > 0.5) {
@@ -418,7 +404,9 @@ MapView.prototype.draw = function () {
     ctx.strokeStyle = 'rgba(20,24,15,0.55)';
     ctx.lineWidth = 0.8;
     ctx.stroke();
-    if (s > 1.2 && pt.label) {             // named much earlier than ordinary dots
+    // the only names left on the map, and only when zoomed well in: these
+    // are your own confirmed pins, a handful per cemetery
+    if (s > 3 && pt.label) {
       ctx.font = 'bold 11px JetBrains Mono, monospace';
       halo(pt.label, p.x + R + 4, p.y + 4);
       ctx.fillStyle = onImg ? 'rgba(20,24,15,0.95)' : 'rgba(30,60,80,0.95)';
