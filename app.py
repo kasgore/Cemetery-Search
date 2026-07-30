@@ -189,7 +189,8 @@ def delete_photo(pk):
 
 @app.post("/api/photo/<pk>")
 def put_photo(pk):
-    p = _photo_path(pk, thumb=request.args.get("thumb") == "1")
+    is_thumb = request.args.get("thumb") == "1"
+    p = _photo_path(pk, thumb=is_thumb)
     if not p:
         return jsonify({"error": "bad key"}), 400
     # full-resolution originals — modern phone JPEGs run 3-12 MB
@@ -198,9 +199,31 @@ def put_photo(pk):
         return jsonify({"error": "empty or too large"}), 400
     if not data.startswith(b"\xff\xd8"):   # JPEG magic — the app only sends JPEG
         return jsonify({"error": "not a jpeg"}), 400
+
+    key = pk
+    # NEVER clobber a different photo. Two people working the same cemetery
+    # both number their shots from zero, so the same slot can arrive twice
+    # with different content — that second upload gets the next free slot
+    # instead of overwriting the first. Identical bytes (a retry) just win
+    # in place.
+    if not is_thumb and os.path.exists(p):
+        with open(p, "rb") as f:
+            existing = f.read()
+        if existing != data:
+            base = pk.split("#")[0]
+            for n in range(1, 100):
+                cand_key = f"{base}#{n}"
+                cand = _photo_path(cand_key)
+                if cand and not os.path.exists(cand):
+                    p, key = cand, cand_key
+                    break
+            else:
+                return jsonify({"error": "too many photos for this grave"}), 409
     with open(p, "wb") as f:
         f.write(data)
-    return jsonify({"ok": True})
+    # the client posts the thumbnail to whatever key came back, so the pair
+    # always stays together
+    return jsonify({"ok": True, "key": key})
 
 
 def _loop():

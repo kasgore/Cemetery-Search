@@ -232,8 +232,12 @@ async function syncPhotos() {
           method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: rec.blob,
         });
         if (!res.ok) { pending++; continue; }
+        // the server may have moved this shot to a free slot (another device
+        // already used ours) — put the thumbnail with wherever it landed
+        let serverKey = pk;
+        try { const j = await res.json(); if (j && j.key) serverKey = j.key; } catch (e) { /* older server */ }
         if (rec.thumb) {
-          await fetch('./api/photo/' + encodeURIComponent(pk) + '?thumb=1', {
+          await fetch('./api/photo/' + encodeURIComponent(serverKey) + '?thumb=1', {
             method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: rec.thumb,
           }).catch(() => {});
         }
@@ -1152,10 +1156,16 @@ async function renderGuidePhoto() {
   const pk = guideTarget.pk;
   const local = await photoSlotsFor(pk);
   const localSlots = new Set(local.map(l => l.slot));
-  // slots that live only on the Pi (taken on another device)
+  // ask the Pi what it actually holds for this grave rather than trusting a
+  // per-device count — that's how a second phone's shots show up here too
   const serverSlots = [];
-  const prog = progressOf(pk);
-  for (let slot = 0; slot < (prog.photo || 0); slot++) if (!localSlots.has(slot)) serverSlots.push(slot);
+  try {
+    const list = (await (await fetch('./api/photos')).json()).photos || [];
+    for (const p of list) if (p.pk === pk && !localSlots.has(p.slot)) serverSlots.push(p.slot);
+  } catch (e) {
+    const prog = progressOf(pk);   // offline: fall back to the local count
+    for (let slot = 0; slot < (prog.photo || 0); slot++) if (!localSlots.has(slot)) serverSlots.push(slot);
+  }
   if (!local.length && !serverSlots.length) { row.style.display = 'none'; row.innerHTML = ''; return; }
   row.innerHTML = '';
   const add = (src, label, key) => {
