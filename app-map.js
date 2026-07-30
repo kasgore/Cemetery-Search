@@ -340,14 +340,14 @@ MapView.prototype.draw = function () {
       ctx.fillText(pt.label, p.x, p.y);
     }
   }
-  // lot numbers before surnames: plat navigation beats name browsing when
-  // both want the same pixels
   // Lot numbers. A BLUE number means we know who is buried there and it can
   // be tapped for the names; a muted grey one is an empty square of the grid.
+  // Colour alone carries that — weight stays regular so a dense section
+  // reads as a grid rather than a wall of bold.
   if (lotLabels.length) {
-    const fh = Math.min(13, Math.max(9.5, s * 2.2));
+    const fh = Math.min(12, Math.max(9, s * 2));
+    ctx.font = fh + 'px JetBrains Mono, monospace';
     for (const [txt, x, y, occupied] of lotLabels) {
-      ctx.font = (occupied ? 'bold ' : '') + fh + 'px JetBrains Mono, monospace';
       if (!tryLabel(txt, x, y, fh)) continue;
       halo(txt, x, y);
       ctx.fillStyle = occupied
