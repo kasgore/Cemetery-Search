@@ -143,8 +143,15 @@ async function syncProgress() {
       const active = document.querySelector('.panel.active');
       if (active && active.id === 'panel-walk') renderWalk();
       if (active && active.id === 'panel-queue') renderQueue();
-      if (active && active.id === 'panel-map' && adoptedGps && mainMap) refreshMapLayers();
+      // any adopted change repaints the map: an anchor moves dots, an outcome
+      // recolours its pin — the other person's work should appear without
+      // anyone thinking to reload
+      if (active && active.id === 'panel-map' && mainMap) refreshMapLayers();
       if (guideTarget && guideTarget.pk) { syncGuideButtons(); renderGuidePhoto(); }
+      if (guideMap && guideModel && guideTarget) {
+        guideMap.layers = buildLayers([String(guideModel.cem.id)], guideTarget);
+        guideMap.draw();
+      }
     }
     const n = Object.values(store.progress).filter(p => p.st || p.note || p.gps || p.photo || p.up).length;
     if (el) el.textContent = `☁ field log synced with the Pi — ${n} entr${n === 1 ? 'y' : 'ies'}`;
@@ -1265,6 +1272,12 @@ function guideSetState(v, extraTip) {
   if (navigator.vibrate) navigator.vibrate(next ? [18, 40, 18] : 12);
   if (!next) toast('Reopened — no outcome set');
   else toast('✔ ' + label + (extraTip ? ' — ' + extraTip : ''), extraTip ? 4200 : 2600);
+  // recolour this grave's pin on both maps straight away
+  if (mainMap) refreshMapLayers();
+  if (guideMap && guideModel) {
+    guideMap.layers = buildLayers([String(guideModel.cem.id)], guideTarget);
+    guideMap.draw();
+  }
 }
 $('guide-done').addEventListener('click', () => guideSetState('done'));
 $('guide-nostone').addEventListener('click', () => guideSetState('nostone', 'photograph the spot in context and flag the request on Find a Grave'));
