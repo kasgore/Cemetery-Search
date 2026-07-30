@@ -526,7 +526,12 @@ function locChip(req, model) {
     const interments = model && model.cem && model.cem.data.meta ? (model.cem.data.memorials.length || 0) : 0;
     const small = interments > 0 && interments <= 400;
     const hasPlotText = req.plot && !/no location|unknown/i.test(req.plot);
-    const msg = hasPlotText ? 'plot recorded — not mappable yet, tap Neighbors'
+    // the register has this person but the cemetery office itself never
+    // recorded where — worth saying plainly, so nobody hunts for a plot
+    // that was never written down
+    const inRegisterNoPlot = req.ros && !req.ros.section;
+    const msg = inRegisterNoPlot ? 'in the burial register, but the cemetery has no plot recorded for them'
+      : hasPlotText ? 'plot recorded — not mappable yet, tap Neighbors'
       : small ? 'no plot — small cemetery, walkable in full'
       : 'no plot on record — tap Neighbors for family leads';
     return `<span class="loc-chip"><span class="dot q-none"></span>${msg}</span>`;
@@ -1482,6 +1487,10 @@ function buildLayers(cemIds, soloTarget) {
         lat: r.loc.lat, lng: r.loc.lng,
         color: st === 'done' ? '#2e7d32' : st ? '#a07a2c' : '#8b3a1f',
         label: r.ln, ref: r, model, r: 5.5,
+        // an inferred position (a relative's lot, or a whole section) should
+        // not look as certain as a drawn lot — draw it hollow so the map
+        // never overstates what we know
+        soft: r.loc.level === 'family' || r.loc.level === 'section',
       });
     }
   }

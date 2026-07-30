@@ -894,6 +894,37 @@ function qualityAcc(m, level) {
 }
 
 /* request enrichment: location + provenance */
+/* A register row that can only be this person. Deliberately conservative:
+   every candidate must survive name-similarity AND date agreement, and if
+   more than one survives we return nothing. Catches the transcription slips
+   that a strict matcher throws away — "Elliot" for "Elliott", "Hobart" for
+   "Hobert" — without ever choosing between two candidates. */
+function uniqueRegisterMatch(model, req) {
+  if (!req.nl || !req.cf) return null;
+  const out = [];
+  for (const r of model.roster) {
+    if (r.mem) continue;                               // already spoken for
+    // rows with no plot are allowed here on purpose: they can never place a
+    // dot (pRos needs a section), but knowing the city HAS the person and
+    // filed them under "plot unknown" is worth telling the searcher
+    const lastExact = r.nl === req.nl || (req.nm && r.nl === req.nm);
+    const lastClose = lastExact || (r.sx === req.sx && lev2(r.nl, req.nl));
+    if (!lastClose) continue;
+    const firstExact = !!(r.cf && req.cf && r.cf === req.cf);
+    const firstClose = firstExact || !!(r.fr && req.fr && (r.fr === req.fr || lev2(r.fr, req.fr)));
+    if (!firstClose) continue;
+    const dyBoth = r.dy && req.dy, byBoth = r.by && req.by;
+    if (dyBoth && Math.abs(r.dy - req.dy) > 1) continue;   // dates contradict
+    if (byBoth && Math.abs(r.by - req.by) > 1) continue;
+    const corroborated = (dyBoth && Math.abs(r.dy - req.dy) <= 1) || (byBoth && Math.abs(r.by - req.by) <= 1);
+    // with no dates at all in the register, demand an exact name on both parts
+    if (!corroborated && !(lastExact && firstExact)) continue;
+    out.push(r);
+    if (out.length > 1) return null;                   // ambiguous — say nothing
+  }
+  return out.length === 1 ? out[0] : null;
+}
+
 function enrichRequest(model, req) {
   const mem = model.memById.get(req.mid);
   req.mem = mem || null;
@@ -917,6 +948,15 @@ function enrichRequest(model, req) {
         req.rosScore = bestScore;
       }
     }
+  }
+  // Last chance before we give up: a register row that is unmistakably this
+  // person — the name matches allowing for one transcription slip, the dates
+  // corroborate (or the register simply has none), AND it is the ONLY such
+  // row. Uniqueness is the safeguard: two plausible people means we say
+  // nothing rather than plant a dot on the wrong grave.
+  if (!req.ros) {
+    const u = uniqueRegisterMatch(model, req);
+    if (u) { req.ros = u; req.rosScore = 62; }
   }
   req.rosVerify = !!(req.ros && req.rosScore > 0 && req.rosScore < 85);
   // best plot info: locate BOTH sources and keep whichever resolves more precisely

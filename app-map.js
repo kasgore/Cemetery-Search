@@ -467,11 +467,22 @@ MapView.prototype.draw = function () {
     const r = t.r || 5.5;
     ctx.beginPath();
     ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = t.color;
-    ctx.fill();
-    ctx.strokeStyle = onImg ? 'rgba(255,255,255,0.95)' : 'rgba(20,24,15,0.75)';
-    ctx.lineWidth = onImg ? 2 : 1;
-    ctx.stroke();
+    if (t.soft) {
+      // inferred, not drawn: hollow with a dashed rim — "somewhere here"
+      ctx.fillStyle = onImg ? 'rgba(255,255,255,0.25)' : 'rgba(255,253,247,0.55)';
+      ctx.fill();
+      ctx.strokeStyle = t.color;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([3, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else {
+      ctx.fillStyle = t.color;
+      ctx.fill();
+      ctx.strokeStyle = onImg ? 'rgba(255,255,255,0.95)' : 'rgba(20,24,15,0.75)';
+      ctx.lineWidth = onImg ? 2 : 1;
+      ctx.stroke();
+    }
     if (t.label && s > 2.1) {
       ctx.font = '10px JetBrains Mono, monospace';
       halo(t.label, p.x + r + 3, p.y + 3);
