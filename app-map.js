@@ -347,12 +347,21 @@ MapView.prototype.draw = function () {
   if (lotLabels.length) {
     const fh = Math.min(12, Math.max(9, s * 2));
     ctx.font = fh + 'px JetBrains Mono, monospace';
+    ctx.lineJoin = 'round';
     for (const [txt, x, y, occupied] of lotLabels) {
       if (!tryLabel(txt, x, y, fh)) continue;
-      halo(txt, x, y);
-      ctx.fillStyle = occupied
-        ? (onImg ? '#7fc4ec' : '#1d557a')
-        : (onImg ? 'rgba(255,253,247,0.75)' : 'rgba(120,110,94,0.6)');
+      if (occupied) {
+        // amber against grass, shadow and pavement alike, and always with a
+        // dark outline — the treatment aerial charts use because a light
+        // fill on a light halo disappears the moment the ground is bright
+        ctx.strokeStyle = 'rgba(18,20,14,0.9)';
+        ctx.lineWidth = 3;
+        ctx.strokeText(txt, x, y);
+        ctx.fillStyle = onImg ? '#ffc93c' : '#9a5b06';
+      } else {
+        halo(txt, x, y);
+        ctx.fillStyle = onImg ? 'rgba(255,253,247,0.7)' : 'rgba(120,110,94,0.55)';
+      }
       ctx.fillText(txt, x, y);
     }
   }
